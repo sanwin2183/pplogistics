@@ -1,0 +1,220 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light palette — neutral slate with deep emerald accent (#0F766E). */
+    --background:           0 0% 100%;
+    --foreground:           220 14% 11%;
+
+    --card:                 0 0% 100%;
+    --card-foreground:      220 14% 11%;
+
+    --popover:              0 0% 100%;
+    --popover-foreground:   220 14% 11%;
+
+    --primary:              173 80% 26%;
+    --primary-foreground:   0 0% 100%;
+
+    --secondary:            220 14% 96%;
+    --secondary-foreground: 220 14% 20%;
+
+    --muted:                220 14% 96%;
+    --muted-foreground:     220 9% 46%;
+
+    --accent:               173 70% 96%;
+    --accent-foreground:    173 80% 26%;
+
+    --destructive:          0 72% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border:               220 13% 91%;
+    --input:                220 13% 91%;
+    --ring:                 173 80% 26%;
+
+    /* Status pill tokens — soft tints. */
+    --status-pending:       45 70% 96%;
+    --status-pending-fg:    35 80% 30%;
+    --status-received:      220 30% 96%;
+    --status-received-fg:   220 30% 35%;
+    --status-flyer:         260 30% 96%;
+    --status-flyer-fg:      260 40% 40%;
+    --status-transit:       200 50% 96%;
+    --status-transit-fg:    200 60% 35%;
+    --status-delivered:     165 40% 96%;
+    --status-delivered-fg:  165 60% 28%;
+    --status-awaiting:      25 70% 96%;
+    --status-awaiting-fg:   25 70% 35%;
+    --status-paid:          165 50% 94%;
+    --status-paid-fg:       165 70% 25%;
+    --status-cancelled:     0 20% 96%;
+    --status-cancelled-fg:  0 30% 40%;
+
+    /* Tracking-page hero gradient stops. */
+    --hero-from:            173 70% 96%;
+    --hero-to:              0 0% 100%;
+    --hero-base:            173 50% 98%;
+
+    /* Safe-area aliases — defaults to 0 in browsers without iOS notch handling. */
+    --sa-top:    env(safe-area-inset-top, 0px);
+    --sa-right:  env(safe-area-inset-right, 0px);
+    --sa-bottom: env(safe-area-inset-bottom, 0px);
+    --sa-left:   env(safe-area-inset-left, 0px);
+  }
+
+  .dark {
+    /* Dark palette — Linear-ish near-black with a slightly brightened emerald. */
+    --background:           220 14% 8%;
+    --foreground:           220 13% 94%;
+
+    --card:                 220 14% 11%;
+    --card-foreground:      220 13% 94%;
+
+    --popover:              220 14% 12%;
+    --popover-foreground:   220 13% 94%;
+
+    --primary:              173 65% 50%;
+    --primary-foreground:   220 14% 8%;
+
+    --secondary:            220 13% 16%;
+    --secondary-foreground: 220 13% 88%;
+
+    --muted:                220 13% 14%;
+    --muted-foreground:     220 9% 62%;
+
+    --accent:               173 55% 18%;
+    --accent-foreground:    173 70% 80%;
+
+    --destructive:          0 60% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border:               220 13% 20%;
+    --input:                220 13% 22%;
+    --ring:                 173 65% 50%;
+
+    /* Status pill tokens — darker tints, lighter foreground. */
+    --status-pending:       45 50% 15%;
+    --status-pending-fg:    45 80% 78%;
+    --status-received:      220 20% 18%;
+    --status-received-fg:   220 30% 78%;
+    --status-flyer:         260 25% 18%;
+    --status-flyer-fg:      260 55% 82%;
+    --status-transit:       200 35% 18%;
+    --status-transit-fg:    200 70% 78%;
+    --status-delivered:     165 25% 16%;
+    --status-delivered-fg:  165 50% 72%;
+    --status-awaiting:      25 40% 18%;
+    --status-awaiting-fg:   25 80% 72%;
+    --status-paid:          165 30% 16%;
+    --status-paid-fg:       165 60% 70%;
+    --status-cancelled:     0 18% 18%;
+    --status-cancelled-fg:  0 30% 78%;
+
+    /* Dark hero — dim emerald glow on near-black. */
+    --hero-from:            173 60% 16%;
+    --hero-to:              220 14% 8%;
+    --hero-base:            220 14% 10%;
+  }
+
+  * { @apply border-border; }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    color-scheme: light dark;
+    /* Prevent rubber-band/elastic scroll past page bounds (iOS feels more native this way). */
+    overscroll-behavior: none;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Smooth momentum scroll on iOS without showing scrollbars when nothing overflows. */
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .tabular-nums,
+  input[type='number'] {
+    font-feature-settings: 'tnum' 1, 'lnum' 1;
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  button, a {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+  }
+
+  /* App chrome (nav, header, buttons) shouldn't feel selectable — too webby. Form
+     fields, paragraphs, list items keep their normal text-selection behaviour. */
+  nav, header, button {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
+
+@layer components {
+  .card-soft {
+    @apply rounded-xl border border-border bg-card shadow-sm;
+  }
+  .status-pill {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium;
+  }
+  .h-eyebrow {
+    @apply text-xs font-medium uppercase tracking-wider text-muted-foreground;
+  }
+  /* Tracking-page hero gradient — only place a gradient lives. Adapts to theme. */
+  .tracking-hero {
+    background:
+      radial-gradient(60% 80% at 50% 0%, hsl(var(--hero-from)) 0%, transparent 70%),
+      linear-gradient(180deg, hsl(var(--hero-base)) 0%, hsl(var(--hero-to)) 100%);
+  }
+
+  /* Safe-area utility classes — Tailwind doesn't ship these natively. */
+  .pt-safe { padding-top: var(--sa-top); }
+  .pb-safe { padding-bottom: var(--sa-bottom); }
+  .pl-safe { padding-left: var(--sa-left); }
+  .pr-safe { padding-right: var(--sa-right); }
+  .px-safe { padding-left: var(--sa-left); padding-right: var(--sa-right); }
+  .h-safe-top { height: var(--sa-top); }
+  .h-safe-bottom { height: var(--sa-bottom); }
+}
+
+@layer utilities {
+  /* Run-as-PWA tweaks. Active when the app is installed and launched standalone. */
+  @media (display-mode: standalone) {
+    /* Add a touch more breathing room at the top under the Dynamic Island. */
+    .standalone-only { display: initial; }
+    /* Hide elements that only make sense in a browser context. */
+    .browser-only { display: none !important; }
+  }
+  @media not all and (display-mode: standalone) {
+    .standalone-only { display: none !important; }
+  }
+
+  @media print {
+    .no-print { display: none !important; }
+    /* Force light theme for prints so the receipt stays clean & legible. */
+    html, html.dark { color-scheme: light; }
+    html.dark {
+      --background: 0 0% 100%;
+      --foreground: 220 14% 11%;
+      --card: 0 0% 100%;
+      --card-foreground: 220 14% 11%;
+      --muted: 220 14% 96%;
+      --muted-foreground: 220 9% 46%;
+      --border: 220 13% 91%;
+      --primary: 173 80% 26%;
+      --primary-foreground: 0 0% 100%;
+      --status-paid: 165 50% 94%;
+      --status-paid-fg: 165 70% 25%;
+    }
+    body { background: white !important; }
+  }
+}

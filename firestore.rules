@@ -1,0 +1,24 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAdmin() {
+      return request.auth != null && request.auth.token.role == 'admin';
+    }
+
+    // Admin-only collections.
+    match /flyers/{id}    { allow read, write: if isAdmin(); }
+    match /customers/{id} { allow read, write: if isAdmin(); }
+    match /categories/{id}{ allow read, write: if isAdmin(); }
+    match /settings/{id}  { allow read, write: if isAdmin(); }
+    match /activity/{id}  { allow read, write: if isAdmin(); }
+
+    // Orders: admins full access; public route reads happen via the
+    // getTrackingOrder Cloud Function (which uses the Admin SDK), so direct
+    // public client reads are denied here. Payment-proof writes also go
+    // through a callable Cloud Function, never direct.
+    match /orders/{id} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

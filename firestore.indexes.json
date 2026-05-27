@@ -1,0 +1,37 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status",    "order": "ASCENDING"  },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "customerId", "order": "ASCENDING"  },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "flyers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status",     "order": "ASCENDING"  },
+        { "fieldPath": "flightDate", "order": "ASCENDING"  }
+      ]
+    },
+    {
+      "collectionGroup": "flyers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "route",      "order": "ASCENDING"  },
+        { "fieldPath": "flightDate", "order": "ASCENDING"  }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

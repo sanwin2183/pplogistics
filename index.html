@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+
+    <!-- Theme colour for the browser chrome / iOS status bar. Auto-toggled at runtime. -->
+    <meta name="theme-color" content="#0F766E" />
+
+    <!-- iOS: behave like a native app when installed to the home screen. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="PP Logistics" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.svg" />
+
+    <!-- Disable phone-number / address auto-linking inside content, which iOS does by default. -->
+    <meta name="format-detection" content="telephone=no, address=no, email=no" />
+
+    <title>PP Logistics</title>
+
+    <!--
+      FOUC-prevention: set the .dark class on <html> BEFORE styles parse so the
+      first paint already matches the user's preference. Kept tiny and safe —
+      if anything throws we just default to light.
+    -->
+    <script>
+      (function () {
+        try {
+          var p = localStorage.getItem('pp-theme');
+          var dark =
+            p === 'dark'
+              ? true
+              : p === 'light'
+                ? false
+                : window.matchMedia('(prefers-color-scheme: dark)').matches;
+          if (dark) document.documentElement.classList.add('dark');
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,41 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAdmin() {
+      return request.auth != null && request.auth.token.role == 'admin';
+    }
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+    function under5MB() {
+      return request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Payment-method QR codes — uploaded by admins, public-read (so the
+    // tracking page can show them without auth).
+    match /qrcodes/{file} {
+      allow read: if true;
+      allow write: if isAdmin() && isImage() && under5MB();
+    }
+
+    // Business logo — public-read (shown on tracking page + receipts).
+    match /branding/{file} {
+      allow read: if true;
+      allow write: if isAdmin() && isImage() && under5MB();
+    }
+
+    // Order packing / receipt photos — admin only.
+    match /orders/{orderId}/photos/{file} {
+      allow read, write: if isAdmin() && (request.resource == null || (isImage() && under5MB()));
+    }
+
+    // Payment proofs uploaded by customers from the tracking page — writable
+    // by anyone (validated by mime + size), readable only by admins.
+    match /payment-proofs/{orderId}/{file} {
+      allow read: if isAdmin();
+      allow create: if isImage() && under5MB();
+      allow update, delete: if isAdmin();
+    }
+  }
+}

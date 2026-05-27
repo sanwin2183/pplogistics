@@ -16,7 +16,10 @@ const DB_ID = 'default';
  * which sets status='paid' and paymentApprovedAt.
  */
 export const submitPaymentProof = onCall(
-  { region: 'asia-southeast1', cors: true, maxInstances: 10 },
+  // `invoker: 'public'` grants public Cloud Run access so customers can upload
+  // payment proofs without authenticating. The function itself still validates
+  // input + only attaches the proof when the order is in 'awaiting_payment'.
+  { region: 'asia-southeast1', cors: true, invoker: 'public', maxInstances: 10 },
   async (req) => {
     const slug = String(req.data?.slug ?? '').trim();
     const imageUrl = String(req.data?.imageUrl ?? '').trim();

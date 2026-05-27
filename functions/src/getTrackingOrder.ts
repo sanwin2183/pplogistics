@@ -19,7 +19,10 @@ const DB_ID = 'default';
  * No auth required — anyone with the slug can read.
  */
 export const getTrackingOrder = onCall(
-  { region: 'asia-southeast1', cors: true, maxInstances: 10 },
+  // `invoker: 'public'` grants the Cloud Run service `allUsers` -> roles/run.invoker
+  // so unauthenticated tracking-page visitors can call this. Without it, Cloud Run
+  // returns 403 before the callable wire format ever runs.
+  { region: 'asia-southeast1', cors: true, invoker: 'public', maxInstances: 10 },
   async (req) => {
     const slug = String(req.data?.slug ?? '').trim();
     if (!slug || slug.length < 6) {

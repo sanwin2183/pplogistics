@@ -166,15 +166,14 @@ export function OrderFormPage() {
   }
 
   return (
-    <div className="space-y-6 pb-24">
-      <Button variant="ghost" size="sm" onClick={() => navigate(-1)}>
-        <ArrowLeft /> Back
-      </Button>
-
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">New order</h1>
-        <p className="text-sm text-muted-foreground">Customer → items → assign flyers → save.</p>
+    <div className="space-y-5 pb-32">
+      <div className="-ml-2 flex items-center gap-1">
+        <Button variant="ghost" size="icon-sm" onClick={() => navigate(-1)} aria-label="Back">
+          <ArrowLeft />
+        </Button>
+        <h1 className="text-xl font-semibold tracking-tight">New order</h1>
       </div>
+      <p className="-mt-3 text-xs text-muted-foreground">Customer → items → assign flyers → save.</p>
 
       <form onSubmit={onSubmit} className="space-y-6">
         {/* --- 1. Customer --- */}
@@ -480,8 +479,12 @@ export function OrderFormPage() {
           <Textarea rows={2} placeholder="Internal notes (not shown to customer)" {...register('notes')} />
         </section>
 
-        {/* --- Sticky submit footer --- */}
-        <div className="fixed inset-x-0 bottom-16 z-30 border-t border-border bg-background/95 p-3 backdrop-blur lg:bottom-0 lg:left-60 lg:pl-8">
+        {/*
+          Sticky submit footer. On mobile it sits exactly above the bottom tab
+          bar (h-16 + safe-area-inset-bottom). On desktop the tab bar is gone,
+          so it pins to the very bottom.
+        */}
+        <div className="fixed inset-x-0 z-30 border-t border-border bg-background/95 p-3 backdrop-blur bottom-[calc(4rem+var(--sa-bottom))] lg:bottom-0 lg:left-60 lg:pl-8">
           <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-1">
             <div className="text-xs text-muted-foreground">
               {fmtKg(totalWeight)} · <span className="font-semibold text-foreground">{fmtMoney(totalAmount)}</span>

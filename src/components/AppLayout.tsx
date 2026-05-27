@@ -43,7 +43,7 @@ export function AppLayout() {
     <div className="min-h-svh bg-secondary/40">
       {/* Desktop sidebar */}
       <aside className="fixed inset-y-0 left-0 hidden w-60 flex-col border-r border-border bg-background lg:flex">
-        <div className="flex h-14 items-center gap-2.5 border-b border-border px-5">
+        <div className="flex h-12 items-center gap-2.5 border-b border-border px-5">
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
             <Package className="h-3.5 w-3.5" strokeWidth={2.5} />
           </div>
@@ -104,17 +104,17 @@ export function AppLayout() {
         `apple-mobile-web-app-status-bar-style=black-translucent`.
       */}
       <header className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur pt-safe px-safe lg:hidden">
-        <div className="flex h-14 items-center justify-between px-4">
+        <div className="flex h-12 items-center justify-between px-4">
           <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-              <Package className="h-3.5 w-3.5" strokeWidth={2.5} />
+            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
+              <Package className="h-3 w-3" strokeWidth={2.5} />
             </div>
-            <div className="text-base font-semibold tracking-tight">PP Logistics</div>
+            <div className="text-sm font-semibold tracking-tight">PP Logistics</div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <ThemeToggle />
             <DropdownMenu>
-              <DropdownMenuTrigger className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-xs font-semibold uppercase">
+              <DropdownMenuTrigger className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-xs font-semibold uppercase">
                 {user?.email?.slice(0, 1)}
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">

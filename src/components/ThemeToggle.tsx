@@ -35,7 +35,7 @@ export function ThemeToggle({ variant = 'standalone' }: { variant?: 'standalone'
       <DropdownMenuTrigger
         className={cn(
           variant === 'standalone'
-            ? 'inline-flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground'
+            ? 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground'
             : 'inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary',
         )}
         aria-label="Theme"

@@ -42,6 +42,30 @@ const assignmentSchema = z.object({
   payoutAmount: z.coerce.number(),
 });
 
+/**
+ * Walk a (possibly nested) react-hook-form errors tree and return the first
+ * `message` string we find. Used to turn a silent submit-failure into a toast.
+ */
+function firstErrorMessage(errs: unknown): string | null {
+  if (!errs) return null;
+  if (typeof errs === 'object') {
+    const o = errs as Record<string, unknown>;
+    if (typeof o.message === 'string') return o.message;
+    if (Array.isArray(errs)) {
+      for (const child of errs) {
+        const m = firstErrorMessage(child);
+        if (m) return m;
+      }
+      return null;
+    }
+    for (const k of Object.keys(o)) {
+      const m = firstErrorMessage(o[k]);
+      if (m) return m;
+    }
+  }
+  return null;
+}
+
 const schema = z
   .object({
     customerId: z.string().min(1, 'Pick a customer'),
@@ -120,28 +144,38 @@ export function OrderFormPage() {
 
   if (!customers || !categories || !flyers || !settings) return <FullPageSpinner />;
 
-  const onSubmit = handleSubmit(async (data) => {
-    try {
-      const payload = {
-        customerId: data.customerId,
-        customerName: data.customerName,
-        customerPhone: data.customerPhone,
-        items: data.items,
-        totalWeightKg: totalWeight,
-        totalAmount,
-        flyerAssignments: data.flyerAssignments,
-        totalPayout,
-        profit,
-        paymentInstructions: { enabledMethodIds: data.enabledMethodIds },
-        notes: data.notes,
-      };
-      const { id: newId } = await create.mutateAsync(payload);
-      toast.success('Order created');
-      navigate(`/orders/${newId}`);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed');
-    }
-  });
+  const onSubmit = handleSubmit(
+    async (data) => {
+      try {
+        const payload = {
+          customerId: data.customerId,
+          customerName: data.customerName,
+          customerPhone: data.customerPhone,
+          items: data.items,
+          totalWeightKg: totalWeight,
+          totalAmount,
+          flyerAssignments: data.flyerAssignments,
+          totalPayout,
+          profit,
+          paymentInstructions: { enabledMethodIds: data.enabledMethodIds },
+          notes: data.notes,
+        };
+        const { id: newId } = await create.mutateAsync(payload);
+        toast.success('Order created');
+        navigate(`/orders/${newId}`);
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'Failed');
+      }
+    },
+    // Validation-failure handler — surface the FIRST problem as a toast so the
+    // user isn't left staring at a button that "does nothing".
+    (errs) => {
+      const first = firstErrorMessage(errs);
+      toast.error(first ?? 'Please fix the highlighted fields');
+      // Helpful for diagnosing edge cases via remote debugging.
+      console.warn('[OrderForm] invalid:', errs);
+    },
+  );
 
   function addItem() {
     items.append({
@@ -295,12 +329,30 @@ export function OrderFormPage() {
                     <span className="text-muted-foreground">Subtotal</span>
                     <span className="font-medium tabular-nums">{fmtMoney(item?.subtotal)}</span>
                   </div>
+                  {/* Per-item validation errors. */}
+                  {(() => {
+                    const e = errors.items?.[i];
+                    if (!e) return null;
+                    const msgs = [
+                      e.description?.message,
+                      e.categoryId?.message,
+                      e.weightKg?.message,
+                    ].filter(Boolean);
+                    return msgs.length ? (
+                      <p className="text-xs text-destructive">{msgs.join(' · ')}</p>
+                    ) : null;
+                  })()}
                 </div>
               );
             })}
           </div>
 
-          {errors.items && <p className="mt-2 text-xs text-destructive">{errors.items.message as string}</p>}
+          {/* Top-level items errors (e.g. "Add at least one item"). */}
+          {errors.items && typeof (errors.items as { message?: unknown }).message === 'string' && (
+            <p className="mt-2 text-xs text-destructive">
+              {(errors.items as { message: string }).message}
+            </p>
+          )}
 
           {!!items.fields.length && (
             <div className="mt-4 flex items-center justify-between border-t border-border pt-3 text-sm">
@@ -414,13 +466,29 @@ export function OrderFormPage() {
                     <span className="text-muted-foreground">Payout</span>
                     <span className="font-medium tabular-nums">{fmtMoney(a?.payoutAmount)}</span>
                   </div>
+                  {/* Per-assignment validation errors. */}
+                  {(() => {
+                    const e = errors.flyerAssignments?.[i];
+                    if (!e || Array.isArray(e)) return null;
+                    const msgs = [
+                      e.flyerId?.message,
+                      e.weightKg?.message,
+                      e.payoutRatePerKg?.message,
+                    ].filter(Boolean);
+                    return msgs.length ? (
+                      <p className="text-xs text-destructive">{msgs.join(' · ')}</p>
+                    ) : null;
+                  })()}
                 </div>
               );
             })}
           </div>
 
-          {errors.flyerAssignments && (
-            <p className="mt-2 text-xs text-destructive">{(errors.flyerAssignments as { message?: string }).message}</p>
+          {/* Top-level assignment errors (e.g. refine: weight exceeds items). */}
+          {errors.flyerAssignments && typeof (errors.flyerAssignments as { message?: unknown }).message === 'string' && (
+            <p className="mt-2 text-xs text-destructive">
+              {(errors.flyerAssignments as { message: string }).message}
+            </p>
           )}
         </section>
 

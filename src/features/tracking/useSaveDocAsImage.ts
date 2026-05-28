@@ -263,7 +263,39 @@ export function useSaveDocAsImage(filenameBase: string) {
               clonedNode.style.width = '210mm';
               clonedNode.style.minHeight = '297mm';
               clonedNode.style.maxWidth = 'none';
-              dlog('onclone: cloned root style overridden (width 210mm)');
+
+              // Belt-and-braces neutralisation of Tailwind's `.truncate`
+              // (overflow:hidden + text-overflow:ellipsis + white-space:
+              // nowrap). The src/index.css `.doc-page-a4 .truncate`
+              // override works for the Invoice's capture root but NOT
+              // for the Receipt's: Receipt's root carries an extra
+              // `relative` class which Tailwind's utilities layer
+              // promotes to `position: relative`, putting the doc into
+              // the normal page flow. In that in-flow render some path
+              // through html2canvas's clone-style evaluation stops the
+              // stylesheet override from biting on the descendant
+              // .truncate elements. Inline-styling each one here is
+              // immune to all of that: inline specificity (1,0,0) +
+              // !important beats every class-based rule deterministically,
+              // and we also remove the `truncate` class so the original
+              // `overflow:hidden` declaration can't even be in the
+              // computed-style cascade. Runs on EVERY save call so
+              // Invoice and Receipt are guaranteed identical.
+              const truncates = clonedNode.querySelectorAll<HTMLElement>('.truncate');
+              truncates.forEach((el) => {
+                el.style.setProperty('overflow', 'visible', 'important');
+                el.style.setProperty('text-overflow', 'clip', 'important');
+                el.style.setProperty('white-space', 'normal', 'important');
+                el.style.setProperty('padding-top', '2px', 'important');
+                el.style.setProperty('padding-bottom', '2px', 'important');
+                el.classList.remove('truncate');
+              });
+
+              dlog(
+                'onclone: cloned root style overridden (width 210mm);',
+                truncates.length,
+                'truncate descendant(s) neutralised',
+              );
             } catch (e) {
               derr('onclone failure:', e);
             }

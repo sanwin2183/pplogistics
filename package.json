@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "set-admin": "tsx scripts/setAdmin.ts",
     "seed-categories": "tsx scripts/seedCategories.ts",
+    "seed-expense-categories": "tsx scripts/seedExpenseCategories.ts",
     "seed-sample": "tsx scripts/seedSample.ts",
     "tracking-links": "tsx scripts/printTrackingLinks.ts",
     "recompute-rollups": "tsx scripts/recomputeRollups.ts",

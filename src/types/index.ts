@@ -183,6 +183,42 @@ export interface AppSettings {
   templates: MessageTemplates;
 }
 
+// ---------- Expenses ----------
+
+/**
+ * Preset expense category. Editable in Settings → Expense categories.
+ * Mirrors the shape of Category but for general business overhead rather
+ * than per-kg carry rates (no rate field needed). Default set seeded by
+ * scripts/seedExpenseCategories.ts (Packaging, Wrapping, Check-in fee,
+ * Transport, Other).
+ */
+export interface ExpenseCategory {
+  id: string;
+  name: string;
+  createdAt: FsTs;
+}
+
+/**
+ * General/daily business expense (NOT tied to orders). Surfaces on the
+ * Dashboard's Expenses section and is subtracted from gross profit to
+ * produce net profit. Stored flat at root per §5; admin-only per §11
+ * (firestore.rules `match /expenses/{id}`).
+ *
+ * `note` omitted when empty (see useExpenses conditional-payload
+ * pattern — Firebase SDK v11 rejects literal `undefined` field values).
+ * `categoryName` denormalised onto the doc so the Dashboard expense
+ * list doesn't need to join against expenseCategories on every render.
+ */
+export interface Expense {
+  id: string;
+  amount: number;
+  date: FsTs;
+  categoryId: string;
+  categoryName: string;
+  note?: string;
+  createdAt: FsTs;
+}
+
 // ---------- Activity feed ----------
 
 export interface ActivityEntry {

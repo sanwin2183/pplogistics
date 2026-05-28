@@ -31,6 +31,8 @@ import { useTheme, chartTokens } from '../../lib/theme';
 import { fetchCol, orderBy, limit } from '../../lib/queries';
 import { useOrders } from '../orders/useOrders';
 import { useCustomers } from '../customers/useCustomers';
+import { useExpensesByMonth } from '../expenses/useExpenses';
+import { ExpensesSection } from '../expenses/ExpensesSection';
 import type { ActivityEntry, Route } from '../../types';
 import { ROUTE_LABELS } from '../../lib/status';
 
@@ -44,17 +46,28 @@ export function DashboardPage() {
   const resolved = useTheme((s) => s.resolved);
   const ct = chartTokens(resolved);
 
+  // Month window shared by stats, ExpensesSection, and the net-profit
+  // calculation. Computed ONCE per render so all three figures align
+  // exactly (no risk of a request straddling midnight on the 1st of
+  // the month and giving inconsistent gross/expenses windows).
+  const monthStartDate = useMemo(() => dayjs().startOf('month').toDate(), []);
+  const monthEndDate = useMemo(
+    () => dayjs().startOf('month').add(1, 'month').toDate(),
+    [],
+  );
+  const { data: monthExpenses } = useExpensesByMonth(monthStartDate, monthEndDate);
+
   const stats = useMemo(() => {
     if (!orders) return null;
     const now = dayjs();
     const monthStart = now.startOf('month');
-    let monthProfit = 0;
+    let monthGrossProfit = 0;
     let outstandingReceivables = 0;
     let outstandingPayables = 0;
     let activeCount = 0;
     for (const o of orders) {
       const d = dayjs(toDate(o.createdAt));
-      if (o.status === 'paid' && d.isAfter(monthStart)) monthProfit += o.profit;
+      if (o.status === 'paid' && d.isAfter(monthStart)) monthGrossProfit += o.profit;
       if (['delivered', 'awaiting_payment'].includes(o.status)) outstandingReceivables += o.totalAmount;
       if (o.status === 'paid') {
         // Unpaid flyer payouts on paid orders.
@@ -64,8 +77,16 @@ export function DashboardPage() {
       }
       if (!['paid'].includes(o.status)) activeCount += 1;
     }
-    return { monthProfit, outstandingReceivables, outstandingPayables, activeCount };
+    return { monthGrossProfit, outstandingReceivables, outstandingPayables, activeCount };
   }, [orders]);
+
+  // Net profit = gross − this-month expense total. Both figures use the
+  // same month window so the math is internally consistent.
+  const monthExpensesTotal = useMemo(
+    () => (monthExpenses ?? []).reduce((s, e) => s + e.amount, 0),
+    [monthExpenses],
+  );
+  const monthNetProfit = (stats?.monthGrossProfit ?? 0) - monthExpensesTotal;
 
   // Profit per day (last 30 days).
   const profitSeries = useMemo(() => {
@@ -138,19 +159,42 @@ export function DashboardPage() {
     <div className="space-y-6">
       <PageHeader title="Dashboard" subtitle={dayjs().format('dddd, D MMMM YYYY')} />
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {/* Stat cards. Gross + Net both shown so the owner sees margin BEFORE
+          AND AFTER overhead — gross is revenue−payouts (the existing card,
+          relabelled), net subtracts this-month expenses on top. Same month
+          window as the Expenses card below. The two profit cards sit side-
+          by-side on mobile so the gross→net comparison is glanceable. */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         {isLoading || !stats ? (
-          [0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24 rounded-xl" />)
+          [0, 1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-24 rounded-xl" />)
         ) : (
           <>
-            <Stat label="This month profit" value={fmtMoney(stats.monthProfit)} icon={TrendingUp} tone="accent" />
+            <Stat
+              label="Gross profit · this month"
+              sublabel="before expenses"
+              value={fmtMoney(stats.monthGrossProfit)}
+              icon={TrendingUp}
+              tone="accent"
+            />
+            <Stat
+              label="Net profit · this month"
+              sublabel="after expenses"
+              value={fmtMoney(monthNetProfit)}
+              icon={TrendingUp}
+              tone={monthNetProfit < 0 ? 'warn' : 'accent'}
+            />
             <Stat label="Outstanding receivables" value={fmtMoneyCompact(stats.outstandingReceivables)} icon={AlertCircle} tone={stats.outstandingReceivables > 0 ? 'warn' : undefined} />
             <Stat label="Owed to flyers" value={fmtMoneyCompact(stats.outstandingPayables)} icon={Wallet} tone={stats.outstandingPayables > 0 ? 'warn' : undefined} />
             <Stat label="Active orders" value={String(stats.activeCount)} icon={Package} />
           </>
         )}
       </div>
+
+      {/* Expenses — this-month total + recent entries + Add button. The
+          form is a bottom sheet (mobile-first, matches CustomerFormSheet).
+          Time-scoping uses the same month window as the Net profit card
+          above so the gross→expenses→net trio is consistent. */}
+      <ExpensesSection monthStart={monthStartDate} monthEnd={monthEndDate} />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* Profit chart */}
@@ -267,11 +311,15 @@ export function DashboardPage() {
 
 function Stat({
   label,
+  sublabel,
   value,
   icon: Icon,
   tone,
 }: {
   label: string;
+  /** Tiny clarifier under the eyebrow — used on the gross/net pair to make
+   *  the "before expenses" vs "after expenses" distinction glanceable. */
+  sublabel?: string;
   value: string;
   icon: typeof TrendingUp;
   tone?: 'warn' | 'accent';
@@ -279,14 +327,21 @@ function Stat({
   return (
     <div className="card-soft p-4">
       <div className="flex items-start justify-between">
-        <div className="h-eyebrow">{label}</div>
+        <div className="min-w-0">
+          <div className="h-eyebrow truncate">{label}</div>
+          {sublabel && (
+            <div className="mt-0.5 text-[10px] uppercase tracking-wider text-muted-foreground/80">
+              {sublabel}
+            </div>
+          )}
+        </div>
         <div
           className={
             tone === 'accent'
-              ? 'flex h-7 w-7 items-center justify-center rounded-md bg-accent text-accent-foreground'
+              ? 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent text-accent-foreground'
               : tone === 'warn'
-                ? 'flex h-7 w-7 items-center justify-center rounded-md bg-status-awaiting text-status-awaiting-fg'
-                : 'flex h-7 w-7 items-center justify-center rounded-md bg-muted text-muted-foreground'
+                ? 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-status-awaiting text-status-awaiting-fg'
+                : 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground'
           }
         >
           <Icon className="h-3.5 w-3.5" />

@@ -32,11 +32,12 @@ import { toast } from 'sonner';
  *   taint the SVG snapshot.
  *
  * Theme during capture:
- *   The print path forces light theme via `@media print` overrides. For
- *   image capture we can't rely on that media query, so we toggle the
- *   `dark` class off on <html> for the duration of the capture, wait a
- *   frame for the recompute, then restore. This keeps the saved image
- *   clean (white background, dark text) regardless of the user's theme.
+ *   The capture target is always the off-screen `.doc-page-a4` element
+ *   (see src/index.css), which hard-codes light-theme CSS variables on
+ *   its own subtree. The cloned content therefore renders in light theme
+ *   regardless of the user's preferred theme — no global <html>.dark
+ *   toggle needed (which would briefly flicker the on-screen card during
+ *   capture).
  */
 export function useSaveDocAsImage(filenameBase: string) {
   const [saving, setSaving] = useState(false);
@@ -46,12 +47,6 @@ export function useSaveDocAsImage(filenameBase: string) {
       if (!node) return;
       if (saving) return;
       setSaving(true);
-
-      const root = document.documentElement;
-      const wasDark = root.classList.contains('dark');
-      if (wasDark) root.classList.remove('dark');
-      // Force a paint cycle so the cloned subtree sees the un-darked CSS vars.
-      await new Promise<void>((r) => requestAnimationFrame(() => r()));
 
       try {
         const blob = await toBlob(node, {
@@ -109,7 +104,6 @@ export function useSaveDocAsImage(filenameBase: string) {
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Could not save image');
       } finally {
-        if (wasDark) root.classList.add('dark');
         setSaving(false);
       }
     },

@@ -207,6 +207,70 @@
       linear-gradient(180deg, hsl(var(--hero-base)) 0%, hsl(var(--hero-to)) 100%);
   }
 
+  /*
+    A4-portrait document target — the canonical capture / print rendering
+    of the Invoice and Receipt.
+
+    Strategy:
+      - Always rendered in the DOM (so images load, fonts resolve, layout
+        stabilises) but positioned off-screen via `position: fixed; left:
+        -200vw` so the user never sees it. The on-screen .card-soft
+        Invoice/Receipt is what they interact with.
+      - Sized to A4 portrait (210 × 297 mm with 15 mm padding) so
+        html-to-image's snapshot lands at A4 proportions, not the tall
+        narrow phone-card shape.
+      - Forces LIGHT theme tokens on the subtree by overriding the
+        same CSS variables used by Tailwind's color utilities. This means
+        the captured JPG and printed page are clean / readable regardless
+        of the user's preferred theme — no JS toggle of <html>.dark
+        needed (which would briefly flicker the visible page).
+      - In @media print the off-screen positioning is dropped so the
+        document flows into the printable area (@page margins handle
+        sizing there); the on-screen .card-soft is hidden via the sibling
+        .print-screen-hidden rule.
+  */
+  .doc-page-a4 {
+    position: fixed;
+    left: -200vw;
+    top: 0;
+    width: 210mm;
+    min-height: 297mm;
+    padding: 15mm;
+    background: white;
+    color: hsl(220 14% 11%);
+    pointer-events: none;
+    font-size: 14px;
+    line-height: 1.55;
+    /* Force light-theme tokens on the subtree. Every variable that any
+       Tailwind utility in the doc subtree reads must be set here so dark
+       mode never bleeds in. */
+    --background:             0 0% 100%;
+    --foreground:             220 14% 11%;
+    --card:                   0 0% 100%;
+    --card-foreground:        220 14% 11%;
+    --popover:                0 0% 100%;
+    --popover-foreground:     220 14% 11%;
+    --primary:                173 80% 26%;
+    --primary-foreground:     0 0% 100%;
+    --secondary:              220 14% 96%;
+    --secondary-foreground:   220 14% 20%;
+    --muted:                  220 14% 96%;
+    --muted-foreground:       220 9% 46%;
+    --accent:                 173 70% 96%;
+    --accent-foreground:      173 80% 26%;
+    --destructive:            0 72% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border:                 220 13% 91%;
+    --input:                  220 13% 91%;
+    --ring:                   173 80% 26%;
+    --status-paid:            165 50% 94%;
+    --status-paid-fg:         165 70% 25%;
+  }
+
+  /* Marker on the on-screen .card-soft Invoice/Receipt so @media print
+     hides it — the .doc-page-a4 sibling is the print target. */
+  .print-screen-hidden { /* no-op on screen; @media print rule hides it */ }
+
   /* Safe-area utility classes — Tailwind doesn't ship these natively. */
   .pt-safe { padding-top: var(--sa-top); }
   .pb-safe { padding-bottom: var(--sa-bottom); }
@@ -249,21 +313,13 @@
     body { background: white !important; }
 
     /*
-      Print-only document scope.
-
-      The public tracking page wraps the Invoice (unpaid) and Receipt (paid)
-      cards in `.print-doc`. Every other section (hero, order header, payment
-      method tabs, timeline, flyer block, page footer) is tagged `.no-print`.
-
-      In print mode we additionally:
-       - Reset width/padding/margins on the routing-page wrappers
-         (`min-h-svh`, `.mx-auto`, `<main>`) so the document is free to fill
-         the printable area instead of staying inside the on-screen 480 px
-         mobile column.
-       - Strip card chrome (border/shadow/rounding) from `.print-doc` so it
-         prints flush, not as a floating card.
-       - Use sensible @page margins so content has breathing room without
-         eating a second page.
+      The A4-portrait document (.doc-page-a4) IS the print target now.
+      On screen it's positioned fixed off-screen at `left: -200vw`; in
+      print we promote it back into the document flow at full printable
+      width. @page margins handle the actual A4 page bounds — we don't
+      need to enforce 210mm dimensions here.
+      Meanwhile the .card-soft on-screen Invoice/Receipt is hidden via
+      .print-screen-hidden (which the components apply to that wrapper).
     */
     @page { margin: 1.4cm; }
     html, body {
@@ -281,22 +337,21 @@
       min-height: 0 !important;
       background: transparent !important;
     }
-    .print-doc {
-      border: none !important;
-      box-shadow: none !important;
-      border-radius: 0 !important;
-      padding: 0 !important;
-      margin: 0 !important;
-      max-width: none !important;
+    .print-screen-hidden { display: none !important; }
+    .doc-page-a4 {
+      position: static !important;
+      left: auto !important;
+      top: auto !important;
       width: 100% !important;
-      background: white !important;
-      /* Avoid orphaning header/totals across a page break. */
-      page-break-inside: auto;
+      min-height: 0 !important;
+      padding: 0 !important;
+      pointer-events: auto !important;
+      background: transparent !important;
     }
-    .print-doc table,
-    .print-doc section,
-    .print-doc header,
-    .print-doc div { page-break-inside: avoid; }
+    .doc-page-a4 table,
+    .doc-page-a4 section,
+    .doc-page-a4 header,
+    .doc-page-a4 > div { page-break-inside: avoid; }
   }
 }
 

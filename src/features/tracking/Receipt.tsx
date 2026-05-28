@@ -1,6 +1,9 @@
-import { Printer, CheckCircle2 } from 'lucide-react';
+import { useRef } from 'react';
+import { Printer, CheckCircle2, Image as ImageIcon } from 'lucide-react';
 import { Button } from '../../components/ui/button';
+import { Spinner } from '../../components/Spinner';
 import { fmtDate, fmtDateTime, fmtKg, fmtMoney } from '../../lib/formatters';
+import { useSaveDocAsImage } from './useSaveDocAsImage';
 import type { PublicOrder } from '../../types';
 
 /**
@@ -10,13 +13,19 @@ import type { PublicOrder } from '../../types';
  * Category / Weight / Rate / Total), but with a "Paid" corner watermark,
  * "Total paid" instead of "Total amount due", and a confirmation footer.
  *
- * Uses window.print() with the @media print stylesheet (§9 / index.css) so
- * the owner / customer can "Save as PDF" cleanly regardless of theme.
+ * Save / print:
+ *   - "Save as image" captures the .print-doc card via html-to-image and
+ *     hands it to the iOS share sheet (Save to Photos) or a download link.
+ *   - "Print / save as PDF" uses window.print() with the @media print rules
+ *     in index.css that scope output to .print-doc only.
  */
 export function Receipt({ order }: { order: PublicOrder }) {
+  const docRef = useRef<HTMLDivElement | null>(null);
+  const { save, saving } = useSaveDocAsImage(`receipt-${order.orderNumber}`);
+
   return (
     <section className="space-y-3">
-      <div className="card-soft relative overflow-hidden p-6 space-y-5">
+      <div ref={docRef} className="card-soft print-doc relative overflow-hidden p-6 space-y-5">
         {/* Corner PAID stamp */}
         <div className="pointer-events-none absolute right-4 top-4 rotate-12">
           <div className="rounded-md border-2 border-status-paid-fg/60 px-3 py-1 text-xs font-bold uppercase tracking-widest text-status-paid-fg/60">
@@ -117,9 +126,15 @@ export function Receipt({ order }: { order: PublicOrder }) {
         <p className="text-center text-xs text-muted-foreground">Thank you for your business 🙏</p>
       </div>
 
-      <Button variant="outline" className="w-full no-print" onClick={() => window.print()}>
-        <Printer /> Save / print receipt
-      </Button>
+      <div className="grid grid-cols-2 gap-2 no-print">
+        <Button variant="outline" onClick={() => save(docRef.current)} disabled={saving}>
+          {saving ? <Spinner className="text-primary" /> : <ImageIcon />}
+          {saving ? 'Saving…' : 'Save as image'}
+        </Button>
+        <Button variant="outline" onClick={() => window.print()}>
+          <Printer /> Print / PDF
+        </Button>
+      </div>
     </section>
   );
 }

@@ -64,11 +64,16 @@ export function TrackingPage() {
   }
 
   return (
-    <div className="min-h-svh bg-background">
-      <div className="mx-auto max-w-[480px]">
+    // print-reset on both wrappers: @media print strips their padding /
+    // max-width so the .print-doc child (Invoice or Receipt) can fill the page
+    // instead of staying inside the 480 px mobile column.
+    <div className="min-h-svh bg-background print-reset">
+      <div className="mx-auto max-w-[480px] print-reset">
         {/* Hero — only place a gradient lives. pt-safe clears the Dynamic Island
-            when this page is viewed in standalone PWA mode. */}
-        <header className="tracking-hero px-6 pb-6 text-center pt-[calc(2.5rem+var(--sa-top))]">
+            when this page is viewed in standalone PWA mode. Excluded from print
+            output (the saved/printed document should be ONLY the invoice or
+            receipt card, not the page chrome). */}
+        <header className="tracking-hero px-6 pb-6 text-center pt-[calc(2.5rem+var(--sa-top))] no-print">
           {order.business.logoUrl ? (
             <img src={order.business.logoUrl} alt={order.business.name} className="mx-auto mb-3 h-12 object-contain" />
           ) : (
@@ -83,39 +88,44 @@ export function TrackingPage() {
         </header>
 
         <main className="px-4 pb-12 space-y-4">
-          {/* Order summary — identifies the order; amount/items live in Invoice/Receipt. */}
-          <section className="card-soft p-6 text-center">
+          {/* Order summary — identifies the order on screen; amount/items live in
+              Invoice/Receipt (which is the print/save target). */}
+          <section className="card-soft p-6 text-center no-print">
             <div className="h-eyebrow">Order</div>
             <div className="mt-1 text-2xl font-semibold tabular-nums">#{order.orderNumber}</div>
             <p className="mt-1 text-sm text-muted-foreground">Hi {order.customerFirstName} 👋</p>
           </section>
 
           {/* Invoice (unpaid) — amount due billboard + line items with subtotals.
-              Visible from the moment the link is opened, never says "paid". */}
+              Visible from the moment the link is opened, never says "paid".
+              This IS the print/save document for unpaid orders. */}
           {order.status !== 'paid' && <Invoice order={order} />}
 
           {/* Payment methods (unpaid) — bank/PromptPay details + QR + upload CTA.
-              Visible from status='pending' onward, copy adapts at awaiting_payment. */}
+              Visible from status='pending' onward, copy adapts at awaiting_payment.
+              Excluded from print: the document shouldn't include the upload UI. */}
           {order.status !== 'paid' && (
-            <PaymentSection
-              order={order}
-              slug={slug!}
-              onUploaded={() => {
-                // Optimistic local state: mark proof uploaded so the UI shifts immediately.
-                setOrder((prev) => prev ? { ...prev, paymentProof: { uploadedAt: { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 } as never, note: 'Awaiting admin review' } } : prev);
-              }}
-            />
+            <div className="no-print">
+              <PaymentSection
+                order={order}
+                slug={slug!}
+                onUploaded={() => {
+                  // Optimistic local state: mark proof uploaded so the UI shifts immediately.
+                  setOrder((prev) => prev ? { ...prev, paymentProof: { uploadedAt: { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 } as never, note: 'Awaiting admin review' } } : prev);
+                }}
+              />
+            </div>
           )}
 
-          {/* Timeline */}
-          <section className="card-soft p-6">
+          {/* Timeline — on-screen narrative. Not part of the document. */}
+          <section className="card-soft p-6 no-print">
             <h2 className="mb-4 text-sm font-semibold">Status</h2>
             <OrderStatusTimeline status={order.status} history={order.statusHistory} pulse />
           </section>
 
           {/* Flyer info */}
           {order.flyer && (
-            <section className="card-soft flex items-center gap-3 p-5">
+            <section className="card-soft flex items-center gap-3 p-5 no-print">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-accent text-accent-foreground">
                 <Plane className="h-4 w-4" />
               </div>
@@ -128,10 +138,11 @@ export function TrackingPage() {
             </section>
           )}
 
-          {/* Receipt (paid) — replaces Invoice + PaymentSection once status='paid'. */}
+          {/* Receipt (paid) — replaces Invoice + PaymentSection once status='paid'.
+              This IS the print/save document for paid orders. */}
           {order.status === 'paid' && <Receipt order={order} />}
 
-          <footer className="pt-4 pb-[calc(1rem+var(--sa-bottom))] text-center text-xs text-muted-foreground space-y-1">
+          <footer className="pt-4 pb-[calc(1rem+var(--sa-bottom))] text-center text-xs text-muted-foreground space-y-1 no-print">
             {order.business.contactPhone && <div>📞 {order.business.contactPhone}</div>}
             {order.business.contactTelegram && <div>{order.business.contactTelegram}</div>}
             <div className="pt-2 flex items-center justify-center gap-1 opacity-60">

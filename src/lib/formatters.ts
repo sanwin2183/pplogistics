@@ -43,15 +43,31 @@ export function fmtKg(kg: number | null | undefined): string {
   return `${kgFormatter.format(kg)} kg`;
 }
 
-/** Accept Firestore Timestamp, JS Date, ISO string, or millis — return Date or null. */
+/**
+ * Accept Firestore Timestamp, JS Date, ISO string, millis — return Date or null.
+ *
+ * Two plain-object timestamp shapes need handling:
+ *   { seconds, nanoseconds }   — Firestore REST / cached snapshots
+ *   { _seconds, _nanoseconds } — Cloud Functions v2 callable wire format
+ *     (Firestore Timestamps cross the callable boundary as their internal
+ *     `_seconds`/`_nanoseconds` props, and the client SDK does NOT rehydrate
+ *     them into Timestamp instances). Without this branch the public
+ *     tracking page's ISSUED / PAID ON / timeline timestamps all fall through
+ *     to `'—'`.
+ */
 export function toDate(value: unknown): Date | null {
   if (!value) return null;
   if (value instanceof Date) return value;
   if (value instanceof Timestamp) return value.toDate();
-  if (typeof value === 'object' && value !== null && 'seconds' in value) {
-    // Plain object shape from Firestore REST or cached snapshot.
-    const v = value as { seconds: number; nanoseconds?: number };
-    return new Date(v.seconds * 1000 + (v.nanoseconds ?? 0) / 1e6);
+  if (typeof value === 'object' && value !== null) {
+    if ('seconds' in value) {
+      const v = value as { seconds: number; nanoseconds?: number };
+      return new Date(v.seconds * 1000 + (v.nanoseconds ?? 0) / 1e6);
+    }
+    if ('_seconds' in value) {
+      const v = value as { _seconds: number; _nanoseconds?: number };
+      return new Date(v._seconds * 1000 + (v._nanoseconds ?? 0) / 1e6);
+    }
   }
   if (typeof value === 'string' || typeof value === 'number') {
     const d = new Date(value);

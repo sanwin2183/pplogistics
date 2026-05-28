@@ -1,0 +1,112 @@
+import { useCallback, useState } from 'react';
+import { toBlob } from 'html-to-image';
+import { toast } from 'sonner';
+
+/**
+ * Render a DOM subtree (the Invoice or Receipt card) to a JPG blob and hand
+ * it to the user via the most reliable platform-specific path.
+ *
+ * Why html-to-image (not html2canvas):
+ *   On iOS Safari html-to-image is generally more faithful with CSS
+ *   variables, web fonts, and SVG icons because it uses a serialized
+ *   <foreignObject> SVG snapshot decoded by the browser's own renderer,
+ *   instead of html2canvas's hand-rolled canvas re-painter (which drops
+ *   backdrop-filter, struggles with system fonts, and is finicky with
+ *   cross-origin <img>).
+ *
+ * iOS download notes:
+ *   - Direct `<a download>` clicks are unreliable in mobile Safari, and the
+ *     downloaded file lands in Files (not Photos). We try `navigator.share`
+ *     with a File first — that opens the iOS share sheet, which gives the
+ *     customer a one-tap "Save Image" -> Photos path. We only fall back to
+ *     the anchor click on platforms without Share or where the share is
+ *     declined / cancelled, then to opening the blob URL in a new tab for
+ *     long-press-save as a last resort.
+ *
+ * Cross-origin images (Firebase Storage logo + payment QR):
+ *   getDownloadURL() returns a firebasestorage.googleapis.com URL that
+ *   serves with `Access-Control-Allow-Origin: *` for media bytes, so
+ *   html-to-image's internal fetch->dataURI step works without any CORS
+ *   config on our side. We pass `cacheBust: true` so URLs don't share an
+ *   <img> already-decoded-via-credentialed-fetch cache entry that would
+ *   taint the SVG snapshot.
+ *
+ * Theme during capture:
+ *   The print path forces light theme via `@media print` overrides. For
+ *   image capture we can't rely on that media query, so we toggle the
+ *   `dark` class off on <html> for the duration of the capture, wait a
+ *   frame for the recompute, then restore. This keeps the saved image
+ *   clean (white background, dark text) regardless of the user's theme.
+ */
+export function useSaveDocAsImage(filenameBase: string) {
+  const [saving, setSaving] = useState(false);
+
+  const save = useCallback(
+    async (node: HTMLElement | null) => {
+      if (!node) return;
+      if (saving) return;
+      setSaving(true);
+
+      const root = document.documentElement;
+      const wasDark = root.classList.contains('dark');
+      if (wasDark) root.classList.remove('dark');
+      // Force a paint cycle so the cloned subtree sees the un-darked CSS vars.
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+      try {
+        const blob = await toBlob(node, {
+          pixelRatio: 2,
+          backgroundColor: '#ffffff',
+          cacheBust: true,
+          // JPEG via the type hint; quality applies on encoders that honour it.
+          // We deliberately keep type=image/jpeg because Photos on iOS treats
+          // JPG as a first-class camera-roll citizen; PNG often imports as
+          // "screenshot" and is heavier.
+          type: 'image/jpeg',
+          quality: 0.95,
+        });
+        if (!blob) throw new Error('Failed to render image');
+
+        const filename = `${filenameBase}.jpg`;
+        const file = new File([blob], filename, { type: 'image/jpeg' });
+
+        // 1. iOS / Android modern share sheet — best UX, lands in Photos via
+        //    "Save Image". `canShare` with files is the gate iOS requires.
+        const nav = navigator as Navigator & {
+          canShare?: (data: { files?: File[] }) => boolean;
+        };
+        if (typeof navigator.share === 'function' && nav.canShare?.({ files: [file] })) {
+          try {
+            await navigator.share({ files: [file], title: filename });
+            return;
+          } catch (e) {
+            // User cancelled the share sheet — that's not an error to toast.
+            if (e instanceof Error && e.name === 'AbortError') return;
+            // Fall through to the download fallback if share itself failed.
+          }
+        }
+
+        // 2. Desktop / Android browsers without file-share — anchor download.
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        // Give Safari a tick before revoking; some builds revoke before the
+        // download stream actually starts otherwise.
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'Could not save image');
+      } finally {
+        if (wasDark) root.classList.add('dark');
+        setSaving(false);
+      }
+    },
+    [filenameBase, saving],
+  );
+
+  return { save, saving };
+}

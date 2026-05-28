@@ -1,6 +1,10 @@
-import { Package } from 'lucide-react';
+import { useRef } from 'react';
+import { Image as ImageIcon, Package, Printer } from 'lucide-react';
+import { Button } from '../../components/ui/button';
+import { Spinner } from '../../components/Spinner';
 import { fmtDate, fmtKg, fmtMoney } from '../../lib/formatters';
 import { ORDER_STATUS_LABELS } from '../../lib/status';
+import { useSaveDocAsImage } from './useSaveDocAsImage';
 import type { PublicOrder } from '../../types';
 
 /**
@@ -14,10 +18,21 @@ import type { PublicOrder } from '../../types';
  *
  * Distinct from <Receipt /> (rendered at status='paid') so the heading and
  * copy never imply "paid" before admin approval.
+ *
+ * Save / print:
+ *   - "Save as image" captures the .print-doc subtree via html-to-image (see
+ *     useSaveDocAsImage) and hands it to the iOS share sheet (Save to Photos)
+ *     or a download link.
+ *   - "Print / save as PDF" uses window.print() with the @media print rules
+ *     in index.css that scope output to .print-doc only.
  */
 export function Invoice({ order }: { order: PublicOrder }) {
+  const docRef = useRef<HTMLElement | null>(null);
+  const { save, saving } = useSaveDocAsImage(`invoice-${order.orderNumber}`);
+
   return (
-    <section className="card-soft p-6 space-y-5">
+    <div className="space-y-3">
+      <section ref={docRef} className="card-soft print-doc p-6 space-y-5">
       {/* Header — title + logo */}
       <header className="flex items-start justify-between gap-3 border-b border-border pb-4">
         <div>
@@ -103,6 +118,19 @@ export function Invoice({ order }: { order: PublicOrder }) {
           <span className="text-2xl font-semibold tabular-nums">{fmtMoney(order.totalAmount)}</span>
         </div>
       </div>
-    </section>
+      </section>
+
+      {/* Save / print controls — excluded from both print output and the
+          saved image (no-print + outside the docRef capture root). */}
+      <div className="grid grid-cols-2 gap-2 no-print">
+        <Button variant="outline" onClick={() => save(docRef.current)} disabled={saving}>
+          {saving ? <Spinner className="text-primary" /> : <ImageIcon />}
+          {saving ? 'Saving…' : 'Save as image'}
+        </Button>
+        <Button variant="outline" onClick={() => window.print()}>
+          <Printer /> Print / PDF
+        </Button>
+      </div>
+    </div>
   );
 }

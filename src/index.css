@@ -247,6 +247,56 @@
       --status-paid-fg: 165 70% 25%;
     }
     body { background: white !important; }
+
+    /*
+      Print-only document scope.
+
+      The public tracking page wraps the Invoice (unpaid) and Receipt (paid)
+      cards in `.print-doc`. Every other section (hero, order header, payment
+      method tabs, timeline, flyer block, page footer) is tagged `.no-print`.
+
+      In print mode we additionally:
+       - Reset width/padding/margins on the routing-page wrappers
+         (`min-h-svh`, `.mx-auto`, `<main>`) so the document is free to fill
+         the printable area instead of staying inside the on-screen 480 px
+         mobile column.
+       - Strip card chrome (border/shadow/rounding) from `.print-doc` so it
+         prints flush, not as a floating card.
+       - Use sensible @page margins so content has breathing room without
+         eating a second page.
+    */
+    @page { margin: 1.4cm; }
+    html, body {
+      width: auto !important;
+      min-height: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      overflow: visible !important;
+    }
+    .print-reset, .print-reset > * {
+      max-width: none !important;
+      width: 100% !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      min-height: 0 !important;
+      background: transparent !important;
+    }
+    .print-doc {
+      border: none !important;
+      box-shadow: none !important;
+      border-radius: 0 !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      max-width: none !important;
+      width: 100% !important;
+      background: white !important;
+      /* Avoid orphaning header/totals across a page break. */
+      page-break-inside: auto;
+    }
+    .print-doc table,
+    .print-doc section,
+    .print-doc header,
+    .print-doc div { page-break-inside: avoid; }
   }
 }
 

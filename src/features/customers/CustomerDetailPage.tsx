@@ -27,13 +27,31 @@ export function CustomerDetailPage() {
   if (!customer) return <p className="text-sm text-muted-foreground">Customer not found.</p>;
 
   // Option A — block deletion when orders exist so we don't orphan order
-  // history or lose irreplaceable rollups (totalSpent, outstandingBalance).
-  // Reads customer.totalOrders, the denormalized rollup already on the doc,
-  // so no extra query is needed.
+  // history.
+  //
+  // Self-correcting against rollup drift: we gate on the ACTUAL orders
+  // query (useOrdersByCustomer above, already loaded for the history
+  // list), not customer.totalOrders. The rollup can be stale on
+  // customers whose orders were deleted BEFORE useDeleteOrder was
+  // upgraded to reverse rollups in a transaction (the pre-fix
+  // deleteDoc didn't decrement totalOrders, so a customer can have
+  // totalOrders=1 but zero actual orders). Trusting the rollup would
+  // permanently trap such customers — can't delete (block fires) and
+  // can't reduce the count (no orders to remove). Trusting the query
+  // unblocks them, and the deletion itself takes the stale rollup with
+  // the doc. scripts/recomputeRollups.ts is the canonical repair for
+  // any other drift; this guard fixes only the delete deadlock.
   function openDeleteDialog() {
     if (!customer) return;
-    if (customer.totalOrders > 0) {
-      const n = customer.totalOrders;
+    if (orders === undefined) {
+      // The query is still loading — don't make a decision either way.
+      // (Allowing the dialog here would risk deleting a customer whose
+      // orders just hadn't arrived from the network yet.)
+      toast.error('Still loading order history — please try again in a moment.');
+      return;
+    }
+    if (orders.length > 0) {
+      const n = orders.length;
       toast.error(
         `This customer has ${n} order${n === 1 ? '' : 's'} and can't be deleted. ` +
           'Delete those orders first, or edit the customer to mark them inactive.',

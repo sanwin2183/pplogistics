@@ -12,6 +12,7 @@
     "seed-categories": "tsx scripts/seedCategories.ts",
     "seed-sample": "tsx scripts/seedSample.ts",
     "tracking-links": "tsx scripts/printTrackingLinks.ts",
+    "recompute-rollups": "tsx scripts/recomputeRollups.ts",
     "deploy": "npm run build && firebase deploy",
     "deploy:hosting": "npm run build && firebase deploy --only hosting",
     "deploy:rules": "firebase deploy --only firestore:rules,storage",

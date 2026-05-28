@@ -98,40 +98,45 @@ export function AppLayout() {
       </aside>
 
       {/*
-        Mobile app bar — pt-safe pushes the inner row below the Dynamic Island.
-        `.app-bar` provides the iOS-style frosted-glass treatment (translucent
-        bg + blur + saturate, with a solid fallback). The inner row uses
-        --appbar-h so every route renders the bar at the identical height/Y.
-        Status bar text colour is automatic thanks to
-        `apple-mobile-web-app-status-bar-style=black-translucent`.
+        Mobile app bar — nested-glass structure. The outer <header> ONLY carries
+        positioning (sticky top-0 z-40 lg:hidden); the inner wrapper carries the
+        .app-bar frosted-glass treatment + border + pt-safe + px-safe. Keeping
+        backdrop-filter off the positioned element avoids a WebKit layer-
+        attachment bug where `position: fixed`/`sticky` + `backdrop-filter` on
+        the same element can drift between routes in iOS standalone PWA. The
+        innermost row stays --appbar-h tall so every route renders at the
+        identical height/Y. Status bar text colour is set by
+        `apple-mobile-web-app-status-bar-style=black` in index.html.
       */}
-      <header className="sticky top-0 z-40 app-bar border-b border-border/60 pt-safe px-safe lg:hidden">
-        <div className="flex items-center justify-between px-4 h-[var(--appbar-h)]">
-          <div className="flex items-center gap-2">
-            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
-              <Package className="h-3 w-3" strokeWidth={2.5} />
+      <header className="sticky top-0 z-40 lg:hidden">
+        <div className="app-bar border-b border-border/60 pt-safe px-safe">
+          <div className="flex items-center justify-between px-4 h-[var(--appbar-h)]">
+            <div className="flex items-center gap-2">
+              <div className="flex h-6 w-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
+                <Package className="h-3 w-3" strokeWidth={2.5} />
+              </div>
+              <div className="text-sm font-semibold tracking-tight">PP Logistics</div>
             </div>
-            <div className="text-sm font-semibold tracking-tight">PP Logistics</div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <ThemeToggle />
-            <DropdownMenu>
-              <DropdownMenuTrigger className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-xs font-semibold uppercase">
-                {user?.email?.slice(0, 1)}
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuLabel>{user?.email}</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onSelect={async () => {
-                    await signOut();
-                    navigate('/login');
-                  }}
-                >
-                  <LogOut className="h-4 w-4" /> Sign out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <div className="flex items-center gap-1.5">
+              <ThemeToggle />
+              <DropdownMenu>
+                <DropdownMenuTrigger className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-xs font-semibold uppercase">
+                  {user?.email?.slice(0, 1)}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuLabel>{user?.email}</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={async () => {
+                      await signOut();
+                      navigate('/login');
+                    }}
+                  >
+                    <LogOut className="h-4 w-4" /> Sign out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         </div>
       </header>
@@ -147,28 +152,35 @@ export function AppLayout() {
       </main>
 
       {/*
-        Mobile bottom tab bar — pb-safe pushes the touch row above the home
-        indicator, exactly the way iOS native apps do it. Shares the .app-bar
-        frosted-glass treatment with the top header so both edges match.
+        Mobile bottom tab bar — nested-glass structure. The outer <nav> ONLY
+        carries `fixed inset-x-0 bottom-0 z-40 lg:hidden`; the inner wrapper
+        carries the .app-bar glass + border + pb-safe + px-safe. This separates
+        position: fixed from backdrop-filter to dodge the WebKit drift bug we
+        hit in iOS standalone PWA where the nav landed at different Y on
+        different routes. pb-safe still clears the home indicator because the
+        outer <nav> sits flush at bottom: 0 and the inner wrapper's bottom
+        padding lifts the touch row off the gesture area.
       */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 app-bar border-t border-border/60 pb-safe px-safe lg:hidden">
-        <div className="flex h-16 items-center justify-around">
-          {mobileNav.map(({ to, label, icon: Icon, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                cn(
-                  'flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[10px] font-medium transition-colors active:scale-95',
-                  isActive ? 'text-primary' : 'text-muted-foreground',
-                )
-              }
-            >
-              <Icon className="h-5 w-5" strokeWidth={2} />
-              <span>{label}</span>
-            </NavLink>
-          ))}
+      <nav className="fixed inset-x-0 bottom-0 z-40 lg:hidden">
+        <div className="app-bar border-t border-border/60 pb-safe px-safe">
+          <div className="flex h-16 items-center justify-around">
+            {mobileNav.map(({ to, label, icon: Icon, end }) => (
+              <NavLink
+                key={to}
+                to={to}
+                end={end}
+                className={({ isActive }) =>
+                  cn(
+                    'flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[10px] font-medium transition-colors active:scale-95',
+                    isActive ? 'text-primary' : 'text-muted-foreground',
+                  )
+                }
+              >
+                <Icon className="h-5 w-5" strokeWidth={2} />
+                <span>{label}</span>
+              </NavLink>
+            ))}
+          </div>
         </div>
       </nav>
 

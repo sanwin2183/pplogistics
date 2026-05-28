@@ -187,7 +187,7 @@ export interface AppSettings {
 
 export interface ActivityEntry {
   id: string;
-  type: 'order_status' | 'order_created' | 'payment_proof' | 'payout';
+  type: 'order_status' | 'order_created' | 'order_deleted' | 'payment_proof' | 'payout';
   orderId?: string;
   orderNumber?: string;
   customerName?: string;

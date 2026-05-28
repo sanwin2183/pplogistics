@@ -27,7 +27,7 @@ import { MoneyDisplay } from '../../components/MoneyDisplay';
 import { fmtDate, fmtDateTime, fmtKg, fmtMoney } from '../../lib/formatters';
 import { trackingUrl } from '../../lib/tracking';
 import { storage } from '../../lib/firebase';
-import { nextOrderActionLabel, nextOrderStatus } from '../../lib/status';
+import { nextOrderActionLabel, nextOrderStatus, ORDER_STATUS_LABELS } from '../../lib/status';
 import { useOrder, useUpdateOrderStatus, useAddOrderPhoto, useDeleteOrder, useRejectPaymentProof } from './useOrders';
 import { useSettings } from '../settings/useSettings';
 import { OrderStatusTimeline } from './OrderStatusTimeline';
@@ -47,6 +47,7 @@ export function OrderDetailPage() {
   const [rejectNote, setRejectNote] = useState('');
   const [markPaidOpen, setMarkPaidOpen] = useState(false);
   const [markPaidNote, setMarkPaidNote] = useState('');
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
 
@@ -137,6 +138,25 @@ export function OrderDetailPage() {
     }
   }
 
+  // Confirmation handler for the delete-order Dialog. Mirrors the pattern
+  // used by the customer-delete + reject-payment flows: mutateAsync inside
+  // try/catch, dialog stays open on failure (useDeleteOrder.onError already
+  // toasts), navigate away on success. Passes the whole Order doc — the
+  // hook needs status / customerId / flyerAssignments / totalAmount /
+  // trackingSlug to compute the rollup reversals and the storage cleanup
+  // path.
+  async function confirmDeleteOrder() {
+    if (!order) return;
+    try {
+      await del.mutateAsync(order);
+      setDeleteOpen(false);
+      toast.success('Order deleted');
+      navigate('/orders');
+    } catch {
+      // useDeleteOrder.onError already surfaced the error message.
+    }
+  }
+
   async function onPickPhoto(file: File) {
     if (!order) return;
     setUploading(true);
@@ -179,15 +199,7 @@ export function OrderDetailPage() {
               variant="ghost"
               size="icon-sm"
               aria-label="Delete order"
-              onClick={() => {
-                if (!confirm('Delete this order? This cannot be undone.')) return;
-                del.mutate(order.id, {
-                  onSuccess: () => {
-                    toast.success('Order deleted');
-                    navigate('/orders');
-                  },
-                });
-              }}
+              onClick={() => setDeleteOpen(true)}
             >
               <Trash2 />
             </Button>
@@ -441,6 +453,90 @@ export function OrderDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/*
+        Delete-order confirmation.
+
+        Policy (A): allow deleting any order, including paid ones. The
+        underlying useDeleteOrder transaction reverses rollups in a
+        status-aware way (totalSpent for paid, outstandingBalance
+        otherwise; totalOrders and flyer.kgUsed always reverse).
+
+        Dialog copy shows the customer, total, weight, status, and flyer
+        assignments so the owner can sanity-check what they're about to
+        roll back. For paid orders specifically the body adds a
+        destructive-tinted warning naming the totalSpent reduction —
+        friction without prohibition, since deletes of paid orders are
+        legitimate use cases (duplicate, mis-marked, etc.).
+      */}
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete order #{order.orderNumber}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              This cannot be undone. The order will be removed and these rollups will be reversed:
+            </p>
+
+            <dl className="space-y-1.5 rounded-lg border border-border bg-muted/40 p-3">
+              <DeleteRow label="Customer" value={order.customerName} />
+              <DeleteRow label="Total" value={fmtMoney(order.totalAmount)} />
+              <DeleteRow label="Weight" value={fmtKg(order.totalWeightKg)} />
+              <DeleteRow label="Status" value={ORDER_STATUS_LABELS[order.status]} />
+              {order.flyerAssignments.length > 0 && (
+                <DeleteRow
+                  label={order.flyerAssignments.length === 1 ? 'Flyer' : 'Flyers'}
+                  value={order.flyerAssignments
+                    .map((a) => `${a.flyerName} (${fmtKg(a.weightKg)})`)
+                    .join(', ')}
+                />
+              )}
+            </dl>
+
+            {order.status === 'paid' ? (
+              <div className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/10 p-3">
+                <p className="font-medium text-destructive">This order is PAID.</p>
+                <p className="text-xs text-destructive/90">
+                  Deleting it will reduce <span className="font-medium">{order.customerName}</span>
+                  &apos;s total spent by{' '}
+                  <span className="font-medium tabular-nums">{fmtMoney(order.totalAmount)}</span> and
+                  return {fmtKg(order.totalWeightKg)} of flyer capacity. Confirm only if this was
+                  recorded in error.
+                </p>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">{order.customerName}</span>&apos;s
+                outstanding balance will decrease by{' '}
+                <span className="font-medium tabular-nums text-foreground">{fmtMoney(order.totalAmount)}</span>
+                {order.flyerAssignments.length > 0 && (
+                  <>
+                    , and {fmtKg(order.totalWeightKg)} of flyer capacity will be returned
+                  </>
+                )}
+                .
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={confirmDeleteOrder} disabled={del.isPending}>
+              {del.isPending ? 'Deleting…' : 'Delete order'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+/** Stacked label / value row for the delete-order Dialog's rollup summary. */
+function DeleteRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="text-right font-medium tabular-nums">{value}</dd>
     </div>
   );
 }

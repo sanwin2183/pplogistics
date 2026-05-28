@@ -54,6 +54,7 @@ export function Receipt({ order }: { order: PublicOrder }) {
                 <div className="truncate">{it.description}</div>
                 <div className="text-xs text-muted-foreground">{it.categoryName} · {fmtKg(it.weightKg)}</div>
               </div>
+              <span className="shrink-0 tabular-nums">{fmtMoney(it.subtotal)}</span>
             </li>
           ))}
         </ul>

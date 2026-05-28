@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import { Button } from '../../components/ui/button';
 import { Textarea } from '../../components/ui/textarea';
 import { Spinner } from '../../components/Spinner';
-import { fmtMoney, fmtDateTime } from '../../lib/formatters';
+import { fmtDateTime } from '../../lib/formatters';
 import { storage, functions } from '../../lib/firebase';
 import type { PublicOrder } from '../../types';
 
@@ -19,6 +19,17 @@ const TYPE_LABEL: Record<string, string> = {
   wave_pay: 'Wave Pay',
 };
 
+/**
+ * Renders bank/PromptPay/etc. details + an upload-proof CTA for any unpaid
+ * order. Caller should only mount this when status !== 'paid'. Amount due is
+ * NOT shown here (lives in <Invoice />) — this is purely "how to pay".
+ *
+ * Heading copy adapts to status: informational ("How to pay") for early
+ * statuses, action ("Pay now") once status === 'awaiting_payment'. The
+ * submitPaymentProof callable itself still rejects pre-awaiting-payment
+ * submissions; if a customer pays early and uploads, the function returns
+ * "Order is not awaiting payment" and the toast.error surfaces it.
+ */
 export function PaymentSection({
   order,
   slug,
@@ -29,12 +40,15 @@ export function PaymentSection({
   onUploaded: () => void;
 }) {
   const methods = order.paymentMethods.filter((m) => m.isActive);
+  const isAwaitingPayment = order.status === 'awaiting_payment';
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // Proof already attached — waiting on admin approval. Same UI for both
+  // "uploaded just now" and "uploaded earlier, still pending".
   if (order.paymentProof) {
     return (
       <section className="card-soft p-6 text-center">
@@ -44,6 +58,20 @@ export function PaymentSection({
         <h2 className="text-sm font-semibold">Payment received</h2>
         <p className="mt-1 text-xs text-muted-foreground">
           Awaiting confirmation. Uploaded {fmtDateTime(order.paymentProof.uploadedAt)}.
+        </p>
+      </section>
+    );
+  }
+
+  // Empty-state — admin hasn't configured any payment methods, or the order
+  // wasn't created with any enabled. Friendlier than rendering an empty tab
+  // strip.
+  if (methods.length === 0) {
+    return (
+      <section className="card-soft p-6 text-center space-y-2">
+        <h2 className="text-sm font-semibold">How to pay</h2>
+        <p className="text-xs text-muted-foreground">
+          Contact the sender for payment details.
         </p>
       </section>
     );
@@ -78,40 +106,38 @@ export function PaymentSection({
   return (
     <section className="card-soft p-6 space-y-5">
       <div className="text-center">
-        <div className="h-eyebrow">Payment due</div>
-        <div className="mt-1 text-3xl font-semibold tabular-nums">{fmtMoney(order.totalAmount)}</div>
+        <h2 className="text-sm font-semibold">{isAwaitingPayment ? 'Pay now' : 'How to pay'}</h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {isAwaitingPayment
+            ? 'Transfer the amount above, then upload your proof.'
+            : 'You can transfer any time. Upload proof when you\'re ready.'}
+        </p>
       </div>
 
-      {methods.length === 0 ? (
-        <p className="rounded-lg bg-muted/40 p-3 text-xs text-center text-muted-foreground">
-          No payment methods configured. Please contact the sender.
-        </p>
-      ) : (
-        <Tabs defaultValue={methods[0].id}>
-          <TabsList className={`grid w-full grid-cols-${Math.min(methods.length, 4)}`}>
-            {methods.map((m) => (
-              <TabsTrigger key={m.id} value={m.id} className="text-xs">{TYPE_LABEL[m.type] ?? m.label}</TabsTrigger>
-            ))}
-          </TabsList>
+      <Tabs defaultValue={methods[0].id}>
+        <TabsList className={`grid w-full grid-cols-${Math.min(methods.length, 4)}`}>
           {methods.map((m) => (
-            <TabsContent key={m.id} value={m.id} className="space-y-3">
-              {m.qrUrl && (
-                <div className="rounded-xl border border-border bg-white p-4 flex justify-center">
-                  <img src={m.qrUrl} alt="Payment QR" className="h-56 w-56 object-contain" />
-                </div>
-              )}
-              <div className="rounded-lg border border-border p-3 text-sm">
-                <DetailRow label="Account name" value={m.accountName} />
-                <DetailRow label={m.type === 'bank_transfer' ? 'Account number' : 'Number'} value={m.accountNumber} copyable />
-                {m.bank && <DetailRow label="Bank" value={m.bank} />}
-              </div>
-            </TabsContent>
+            <TabsTrigger key={m.id} value={m.id} className="text-xs">{TYPE_LABEL[m.type] ?? m.label}</TabsTrigger>
           ))}
-        </Tabs>
-      )}
+        </TabsList>
+        {methods.map((m) => (
+          <TabsContent key={m.id} value={m.id} className="space-y-3">
+            {m.qrUrl && (
+              <div className="rounded-xl border border-border bg-white p-4 flex justify-center">
+                <img src={m.qrUrl} alt="Payment QR" className="h-56 w-56 object-contain" />
+              </div>
+            )}
+            <div className="rounded-lg border border-border p-3 text-sm">
+              <DetailRow label="Account name" value={m.accountName} />
+              <DetailRow label={m.type === 'bank_transfer' ? 'Account number' : 'Number'} value={m.accountNumber} copyable />
+              {m.bank && <DetailRow label="Bank" value={m.bank} />}
+            </div>
+          </TabsContent>
+        ))}
+      </Tabs>
 
       {!open ? (
-        <Button className="w-full" onClick={() => setOpen(true)} disabled={methods.length === 0}>
+        <Button className="w-full" onClick={() => setOpen(true)}>
           I've paid · Upload proof
         </Button>
       ) : (

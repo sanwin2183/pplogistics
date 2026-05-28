@@ -193,7 +193,7 @@ export interface PublicOrder {
   orderNumber: string;
   trackingSlug: string;
   customerFirstName: string;
-  items: Array<Pick<OrderItem, 'description' | 'categoryName' | 'weightKg'>>;
+  items: Array<Pick<OrderItem, 'description' | 'categoryName' | 'weightKg' | 'subtotal'>>;
   totalWeightKg: number;
   totalAmount: number;
   status: OrderStatus;

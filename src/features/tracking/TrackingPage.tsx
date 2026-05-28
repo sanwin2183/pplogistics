@@ -8,11 +8,11 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { functions } from '../../lib/firebase';
-import { fmtDate, fmtKg, fmtMoney } from '../../lib/formatters';
+import { fmtDate } from '../../lib/formatters';
 import { ROUTE_LABELS } from '../../lib/status';
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../../components/ui/accordion';
 import { Spinner } from '../../components/Spinner';
 import { OrderStatusTimeline } from '../orders/OrderStatusTimeline';
+import { Invoice } from './Invoice';
 import { PaymentSection } from './PaymentSection';
 import { Receipt } from './Receipt';
 import type { PublicOrder } from '../../types';
@@ -83,24 +83,29 @@ export function TrackingPage() {
         </header>
 
         <main className="px-4 pb-12 space-y-4">
-          {/* Order summary */}
-          <section className="card-soft p-6">
-            <div className="text-center">
-              <div className="h-eyebrow">Order</div>
-              <div className="mt-1 text-2xl font-semibold tabular-nums">#{order.orderNumber}</div>
-              <p className="mt-1 text-sm text-muted-foreground">Hi {order.customerFirstName} 👋</p>
-            </div>
-            <div className="mt-5 grid grid-cols-2 divide-x divide-border rounded-lg bg-muted/50 py-3 text-center">
-              <div>
-                <div className="text-xs text-muted-foreground">Weight</div>
-                <div className="mt-0.5 text-base font-semibold tabular-nums">{fmtKg(order.totalWeightKg)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">Total</div>
-                <div className="mt-0.5 text-base font-semibold tabular-nums">{fmtMoney(order.totalAmount)}</div>
-              </div>
-            </div>
+          {/* Order summary — identifies the order; amount/items live in Invoice/Receipt. */}
+          <section className="card-soft p-6 text-center">
+            <div className="h-eyebrow">Order</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums">#{order.orderNumber}</div>
+            <p className="mt-1 text-sm text-muted-foreground">Hi {order.customerFirstName} 👋</p>
           </section>
+
+          {/* Invoice (unpaid) — amount due billboard + line items with subtotals.
+              Visible from the moment the link is opened, never says "paid". */}
+          {order.status !== 'paid' && <Invoice order={order} />}
+
+          {/* Payment methods (unpaid) — bank/PromptPay details + QR + upload CTA.
+              Visible from status='pending' onward, copy adapts at awaiting_payment. */}
+          {order.status !== 'paid' && (
+            <PaymentSection
+              order={order}
+              slug={slug!}
+              onUploaded={() => {
+                // Optimistic local state: mark proof uploaded so the UI shifts immediately.
+                setOrder((prev) => prev ? { ...prev, paymentProof: { uploadedAt: { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 } as never, note: 'Awaiting admin review' } } : prev);
+              }}
+            />
+          )}
 
           {/* Timeline */}
           <section className="card-soft p-6">
@@ -123,39 +128,7 @@ export function TrackingPage() {
             </section>
           )}
 
-          {/* Items accordion */}
-          <section className="card-soft px-4">
-            <Accordion type="single" collapsible>
-              <AccordionItem value="items">
-                <AccordionTrigger className="text-sm">
-                  <span>Items <span className="ml-2 text-xs text-muted-foreground">({order.items.length})</span></span>
-                </AccordionTrigger>
-                <AccordionContent>
-                  <ul className="space-y-2 pb-2">
-                    {order.items.map((it, i) => (
-                      <li key={i} className="flex items-center justify-between gap-2 text-sm">
-                        <div className="min-w-0">
-                          <div className="truncate">{it.description}</div>
-                          <div className="text-xs text-muted-foreground">{it.categoryName}</div>
-                        </div>
-                        <div className="shrink-0 text-xs text-muted-foreground tabular-nums">{fmtKg(it.weightKg)}</div>
-                      </li>
-                    ))}
-                  </ul>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
-          </section>
-
-          {/* Payment section (awaiting_payment) */}
-          {order.status === 'awaiting_payment' && (
-            <PaymentSection order={order} slug={slug!} onUploaded={() => {
-              // Optimistic local state: mark proof uploaded so the UI shifts immediately.
-              setOrder((prev) => prev ? { ...prev, paymentProof: { uploadedAt: { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 } as never, note: 'Awaiting admin review' } } : prev);
-            }} />
-          )}
-
-          {/* Receipt (paid) */}
+          {/* Receipt (paid) — replaces Invoice + PaymentSection once status='paid'. */}
           {order.status === 'paid' && <Receipt order={order} />}
 
           <footer className="pt-4 pb-[calc(1rem+var(--sa-bottom))] text-center text-xs text-muted-foreground space-y-1">

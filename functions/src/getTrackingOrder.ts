@@ -70,11 +70,15 @@ export const getTrackingOrder = onCall(
     const customerName = String(order.customerName ?? '').trim();
     const customerFirstName = customerName.split(' ')[0] || customerName;
 
-    // --- Items: keep only display fields ---
+    // --- Items: keep only customer-facing fields ---
+    // subtotal is the line price the customer is paying (revenue, not payout),
+    // safe to expose per §11; ratePerKg stays stripped to keep the internal
+    // rate-card out of public view (customer can still infer total/weight).
     const items = (order.items as Array<Record<string, unknown>> | undefined ?? []).map((it) => ({
       description: String(it.description ?? ''),
       categoryName: String(it.categoryName ?? ''),
       weightKg: Number(it.weightKg ?? 0),
+      subtotal: Number(it.subtotal ?? 0),
     }));
 
     // --- Payment proof: don't leak the image URL to non-uploaders ---

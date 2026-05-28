@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { Copy, Check, Upload, CheckCircle2 } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
-import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref as storageRef, uploadBytes } from 'firebase/storage';
 import { nanoid } from 'nanoid';
 import { toast } from 'sonner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
@@ -89,15 +89,23 @@ export function PaymentSection({
     }
     setSubmitting(true);
     try {
-      // 1. Upload to Storage at payment-proofs/{orderId}/...
+      // 1. Upload to Storage. Storage rule allows non-admin CREATE on
+      //    payment-proofs/{slug}/* with isImage + under5MB validation
+      //    (see storage.rules).
       const path = `payment-proofs/${slug}/${nanoid(10)}-${file.name}`;
       const ref = storageRef(storage, path);
       await uploadBytes(ref, file);
-      const imageUrl = await getDownloadURL(ref);
 
-      // 2. Call the Cloud Function to attach proof to the order (sanitized write path).
-      const fn = httpsCallable<{ slug: string; imageUrl: string; note?: string }, { ok: true }>(functions, 'submitPaymentProof');
-      await fn({ slug, imageUrl, note: note.trim() || undefined });
+      // 2. NO getDownloadURL here — that's a READ, and the same rule says
+      //    `allow read: if isAdmin()` per §11 (proof images are admin-only).
+      //    The customer can't read back their own upload, so calling
+      //    getDownloadURL would throw storage/unauthorized AFTER the
+      //    successful upload. Instead we send just the storage PATH to the
+      //    function and the admin client resolves it to a URL via
+      //    getDownloadURL (admin has read access) when rendering the
+      //    review panel.
+      const fn = httpsCallable<{ slug: string; imagePath: string; note?: string }, { ok: true }>(functions, 'submitPaymentProof');
+      await fn({ slug, imagePath: path, note: note.trim() || undefined });
       toast.success('Payment proof submitted — thanks!');
       onUploaded();
       setOpen(false);

@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -31,7 +32,41 @@ import { nextOrderActionLabel, nextOrderStatus, ORDER_STATUS_LABELS } from '../.
 import { useOrder, useUpdateOrderStatus, useAddOrderPhoto, useDeleteOrder, useRejectPaymentProof } from './useOrders';
 import { useSettings } from '../settings/useSettings';
 import { OrderStatusTimeline } from './OrderStatusTimeline';
-import type { Order } from '../../types';
+import type { Order, PaymentProof } from '../../types';
+
+/**
+ * Resolve a stored PaymentProof to a renderable image URL.
+ *
+ * New proofs (post May 29 2026) carry `imagePath` — a storage path WITHIN
+ * the bucket. The admin client calls getDownloadURL on it (admin has read
+ * access on payment-proofs per §11) and renders the resulting URL.
+ *
+ * Legacy proofs carry `imageUrl` directly — submitted before the
+ * customer-side getDownloadURL call was removed. We return it as-is.
+ *
+ * The query key includes both fields so a doc swapping from one to the
+ * other (e.g. re-submission) refetches.
+ */
+function useProofImageUrl(proof: PaymentProof | undefined): {
+  url: string | undefined;
+  isLoading: boolean;
+} {
+  const path = proof?.imagePath;
+  const legacy = proof?.imageUrl;
+  const q = useQuery({
+    queryKey: ['proofUrl', path, legacy],
+    queryFn: async () => {
+      if (path) return getDownloadURL(storageRef(storage, path));
+      return legacy ?? null;
+    },
+    enabled: !!(path || legacy),
+    staleTime: 60_000, // download URLs are stable; don't refetch on every render
+  });
+  return {
+    url: q.data ?? undefined,
+    isLoading: q.isLoading,
+  };
+}
 
 export function OrderDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -50,6 +85,12 @@ export function OrderDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+
+  // Resolve paymentProof.imagePath -> download URL on the admin side. The
+  // customer never reads from Storage; only the admin (who has read
+  // permission) calls getDownloadURL. See useProofImageUrl above for the
+  // legacy-fallback handling.
+  const { url: proofUrl, isLoading: proofUrlLoading } = useProofImageUrl(order?.paymentProof);
 
   if (isLoading) return <FullPageSpinner />;
   if (!order) return <p className="text-sm text-muted-foreground">Order not found.</p>;
@@ -274,14 +315,24 @@ export function OrderDetailPage() {
             </div>
             {order.paymentProof ? (
               <>
-                <a
-                  href={order.paymentProof.imageUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="block overflow-hidden rounded-lg border border-border"
-                >
-                  <img src={order.paymentProof.imageUrl} alt="Payment proof" className="max-h-72 w-full object-contain bg-white" />
-                </a>
+                {proofUrlLoading || !proofUrl ? (
+                  // Resolving the download URL via getDownloadURL — admin's
+                  // first paint of the proof. Subsequent visits use the
+                  // query cache (staleTime: 60s) so this only flashes once
+                  // per order/session.
+                  <div className="flex h-72 items-center justify-center rounded-lg border border-border bg-muted/40 text-xs text-muted-foreground">
+                    Loading proof…
+                  </div>
+                ) : (
+                  <a
+                    href={proofUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block overflow-hidden rounded-lg border border-border"
+                  >
+                    <img src={proofUrl} alt="Payment proof" className="max-h-72 w-full object-contain bg-white" />
+                  </a>
+                )}
                 {order.paymentProof.note && (
                   <p className="text-xs text-muted-foreground">"{order.paymentProof.note}"</p>
                 )}

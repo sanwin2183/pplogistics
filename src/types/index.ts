@@ -101,9 +101,31 @@ export interface PaymentInstructions {
   enabledMethodIds: string[];
 }
 
+/**
+ * Customer-uploaded payment proof attached to an order.
+ *
+ * Storage architecture (post May 29 2026):
+ *   - imagePath: the path WITHIN the bucket (e.g.
+ *       payment-proofs/<slug>/<nanoid>-<filename>). Set by
+ *       submitPaymentProof. The admin client resolves this to a
+ *       download URL via getDownloadURL when rendering the review panel.
+ *   - imageUrl (legacy): older proofs (submitted before the customer-
+ *       side getDownloadURL call was removed) stored a full https://
+ *       URL here. Admin UI falls back to this when imagePath is absent.
+ *
+ * Why path-not-url: §11 says payment proofs are admin-only read. The
+ * customer can WRITE (create) the file but can't READ it back —
+ * getDownloadURL is a read call, so it failed with storage/unauthorized
+ * AFTER the upload succeeded. Storing the path and resolving on the
+ * admin side keeps customers off the read path entirely.
+ */
 export interface PaymentProof {
   uploadedAt: FsTs;
-  imageUrl: string;
+  imagePath?: string;
+  /** @deprecated New proofs (post May 29 2026) use `imagePath` and the
+   *  admin client resolves the URL via getDownloadURL. Old docs keep
+   *  this populated so the admin UI still renders them. */
+  imageUrl?: string;
   note?: string;
 }
 

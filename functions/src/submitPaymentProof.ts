@@ -96,8 +96,15 @@ function escapeHtml(s: string): string {
  * Public callable — attach a payment proof to the order identified by trackingSlug.
  *
  * The image upload itself happens client-side directly to Storage (validated by
- * storage.rules). This function records the URL + note on the Firestore order,
- * appends a status-history entry, and writes an activity row for the admin feed.
+ * storage.rules `allow create: if isImage() && under5MB()`). The customer sends
+ * us the storage PATH of the uploaded file (NOT a download URL — the customer
+ * lacks read access on payment-proofs per §11, so they can't call
+ * getDownloadURL); this function records that path + note on the Firestore
+ * order, appends a status-history entry, and writes an activity row for the
+ * admin feed.
+ *
+ * The admin client resolves path → download URL via getDownloadURL when
+ * rendering the review panel — admin has read access on payment-proofs.
  *
  * Status guard:
  *   Customers are allowed to pay EARLY — from any non-paid status (pending,
@@ -134,11 +141,31 @@ export const submitPaymentProof = onCall(
   },
   async (req) => {
     const slug = String(req.data?.slug ?? '').trim();
-    const imageUrl = String(req.data?.imageUrl ?? '').trim();
+    const imagePath = String(req.data?.imagePath ?? '').trim();
     const note = req.data?.note != null ? String(req.data.note).slice(0, 500) : undefined;
 
     if (!slug || slug.length < 6) throw new HttpsError('invalid-argument', 'Bad slug');
-    if (!imageUrl.startsWith('https://')) throw new HttpsError('invalid-argument', 'Bad image URL');
+
+    // Validate the imagePath the customer uploaded to. The Storage rule
+    // gates the upload itself (isImage + under5MB) but the client picks
+    // the path, so we ALSO check here that:
+    //   1. It's inside this order's slug folder — prevents an attacker
+    //      from supplying a path under another order's folder or under
+    //      a totally different prefix (e.g. /orders/x/photos/y.jpg) to
+    //      get the admin to "approve" an arbitrary file.
+    //   2. It contains no path-traversal segments.
+    //   3. It's a reasonable length and contains no protocol prefix —
+    //      the customer should send a path like
+    //      `payment-proofs/<slug>/<nanoid>-<filename>`, NOT a full URL.
+    const expectedPrefix = `payment-proofs/${slug}/`;
+    if (
+      !imagePath.startsWith(expectedPrefix) ||
+      imagePath.includes('..') ||
+      imagePath.includes('://') ||
+      imagePath.length > 512
+    ) {
+      throw new HttpsError('invalid-argument', 'Bad image path');
+    }
 
     const db = getFirestore(getApp(), DB_ID);
     const qs = await db.collection('orders').where('trackingSlug', '==', slug).limit(1).get();
@@ -156,7 +183,10 @@ export const submitPaymentProof = onCall(
     const now = Timestamp.now();
     await doc.ref.update({
       // Replace any existing proof in place — idempotent re-submit.
-      paymentProof: { uploadedAt: now, imageUrl, note: note ?? null },
+      // We store the storage PATH not the download URL — the admin client
+      // resolves path → URL via getDownloadURL when rendering the review
+      // panel (admin has read access on payment-proofs per §11).
+      paymentProof: { uploadedAt: now, imagePath, note: note ?? null },
       paymentReceivedAt: now,
       // statusHistory entry uses the order's CURRENT status as the label
       // (not a hard-coded 'awaiting_payment') so an early-paid pending

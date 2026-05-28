@@ -303,6 +303,39 @@
   */
   .doc-page-a4 * { line-height: 1.5 !important; }
 
+  /*
+    Disable Tailwind's `.truncate` (= overflow:hidden + text-overflow:
+    ellipsis + white-space:nowrap) inside the capture subtree.
+
+    Why: the line-height fix above gave non-truncate text rows enough
+    breathing room, but `.truncate`'s `overflow: hidden` COMBINED with
+    html2canvas's slightly-short glyph-box measurement crops bold
+    ascenders AND descenders on the truncate'd rows. Visible in the
+    saved JPG as PP Logistics / Testing / Testitems / "Other" /
+    tagline / phone all rendering with their tops AND bottoms cut.
+    No element without `.truncate` clips (Invoice, Total amount due,
+    HOW TO PAY, PromptPay, San Win, etc. all render fully).
+
+    The A4 doc has full A4 width (210 mm = 794 px) so single-line
+    truncation isn't useful here — wrapping is preferable to
+    clipping. The on-screen .card-soft Invoice/Receipt is a DIFFERENT
+    element (uses .print-screen-hidden, not .doc-page-a4) so its
+    tight-column truncation continues to work unchanged. The print
+    path renders the same .doc-page-a4 but its rasteriser doesn't
+    have the under-measure bug, and allowing wrap there is also fine.
+
+    Tiny padding-block of 2px gives the renderer additional pixel
+    headroom in case html2canvas still under-measures a wrapped row
+    by a tick. Negligible visual shift, defensive against future
+    glyph-clipping regressions.
+  */
+  .doc-page-a4 .truncate {
+    overflow: visible !important;
+    text-overflow: clip !important;
+    white-space: normal !important;
+    padding-block: 2px !important;
+  }
+
   /* Marker on the on-screen .card-soft Invoice/Receipt so @media print
      hides it — the .doc-page-a4 sibling is the print target. */
   .print-screen-hidden { /* no-op on screen; @media print rule hides it */ }

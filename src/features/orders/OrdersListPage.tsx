@@ -8,6 +8,7 @@ import { Skeleton } from '../../components/ui/skeleton';
 import { EmptyState } from '../../components/EmptyState';
 import { OrderStatusBadge } from '../../components/StatusBadge';
 import { MoneyDisplay } from '../../components/MoneyDisplay';
+import { PageHeader } from '../../components/PageHeader';
 import { fmtDate, fmtKg } from '../../lib/formatters';
 import { ORDER_STATUSES, ORDER_STATUS_LABELS } from '../../lib/status';
 import { useOrders } from './useOrders';
@@ -33,15 +34,15 @@ export function OrdersListPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Orders</h1>
-          <p className="text-sm text-muted-foreground">{orders?.length ?? 0} total</p>
-        </div>
-        <Button asChild>
-          <Link to="/orders/new"><Plus /> New order</Link>
-        </Button>
-      </div>
+      <PageHeader
+        title="Orders"
+        subtitle={`${orders?.length ?? 0} total`}
+        action={
+          <Button asChild>
+            <Link to="/orders/new"><Plus /> New order</Link>
+          </Button>
+        }
+      />
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div className="relative flex-1">

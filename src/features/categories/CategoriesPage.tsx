@@ -11,6 +11,7 @@ import { Textarea } from '../../components/ui/textarea';
 import { Switch } from '../../components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
 import { EmptyState } from '../../components/EmptyState';
+import { PageHeader } from '../../components/PageHeader';
 import { Skeleton } from '../../components/ui/skeleton';
 import { fmtMoney } from '../../lib/formatters';
 import { useCategories, useCreateCategory, useUpdateCategory, useDeleteCategory } from './useCategories';
@@ -31,15 +32,15 @@ export function CategoriesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-end justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Categories</h1>
-          <p className="text-sm text-muted-foreground">Default rates for the items you carry.</p>
-        </div>
-        <Button onClick={() => setCreating(true)}>
-          <Plus /> New
-        </Button>
-      </div>
+      <PageHeader
+        title="Categories"
+        subtitle="Default rates for the items you carry."
+        action={
+          <Button onClick={() => setCreating(true)}>
+            <Plus /> New
+          </Button>
+        }
+      />
 
       {isLoading ? (
         <div className="space-y-2">

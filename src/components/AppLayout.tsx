@@ -99,12 +99,14 @@ export function AppLayout() {
 
       {/*
         Mobile app bar — pt-safe pushes the inner row below the Dynamic Island.
-        backdrop-blur + translucent bg behaves like iOS large title nav bars when
-        content scrolls under it. Status bar text colour is automatic thanks to
+        `.app-bar` provides the iOS-style frosted-glass treatment (translucent
+        bg + blur + saturate, with a solid fallback). The inner row uses
+        --appbar-h so every route renders the bar at the identical height/Y.
+        Status bar text colour is automatic thanks to
         `apple-mobile-web-app-status-bar-style=black-translucent`.
       */}
-      <header className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur pt-safe px-safe lg:hidden">
-        <div className="flex h-12 items-center justify-between px-4">
+      <header className="sticky top-0 z-40 app-bar border-b border-border/60 pt-safe px-safe lg:hidden">
+        <div className="flex items-center justify-between px-4 h-[var(--appbar-h)]">
           <div className="flex items-center gap-2">
             <div className="flex h-6 w-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
               <Package className="h-3 w-3" strokeWidth={2.5} />
@@ -146,9 +148,10 @@ export function AppLayout() {
 
       {/*
         Mobile bottom tab bar — pb-safe pushes the touch row above the home
-        indicator, exactly the way iOS native apps do it.
+        indicator, exactly the way iOS native apps do it. Shares the .app-bar
+        frosted-glass treatment with the top header so both edges match.
       */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background/90 backdrop-blur pb-safe px-safe lg:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-40 app-bar border-t border-border/60 pb-safe px-safe lg:hidden">
         <div className="flex h-16 items-center justify-around">
           {mobileNav.map(({ to, label, icon: Icon, end }) => (
             <NavLink

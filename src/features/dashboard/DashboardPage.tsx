@@ -25,6 +25,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent } from '../../components/ui/card';
 import { Skeleton } from '../../components/ui/skeleton';
 import { MoneyDisplay } from '../../components/MoneyDisplay';
+import { PageHeader } from '../../components/PageHeader';
 import { fmtMoney, fmtMoneyCompact, toDate, fmtRelative, fmtKg } from '../../lib/formatters';
 import { useTheme, chartTokens } from '../../lib/theme';
 import { fetchCol, orderBy, limit } from '../../lib/queries';
@@ -135,10 +136,7 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">{dayjs().format('dddd, D MMMM YYYY')}</p>
-      </div>
+      <PageHeader title="Dashboard" subtitle={dayjs().format('dddd, D MMMM YYYY')} />
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

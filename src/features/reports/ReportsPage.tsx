@@ -8,6 +8,7 @@ import { Card, CardContent } from '../../components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
 import { FullPageSpinner } from '../../components/Spinner';
 import { MoneyDisplay } from '../../components/MoneyDisplay';
+import { PageHeader } from '../../components/PageHeader';
 import { fmtKg, fmtMoney, toDate } from '../../lib/formatters';
 import { useOrders } from '../orders/useOrders';
 import { useFlyers } from '../flyers/useFlyers';
@@ -118,10 +119,7 @@ export function ReportsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Reports</h1>
-        <p className="text-sm text-muted-foreground">Paid orders in this date range.</p>
-      </div>
+      <PageHeader title="Reports" subtitle="Paid orders in this date range." />
 
       <div className="card-soft flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
         <div className="flex-1 space-y-1.5">

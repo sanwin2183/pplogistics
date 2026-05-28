@@ -61,6 +61,11 @@
     --sa-right:  env(safe-area-inset-right, 0px);
     --sa-bottom: env(safe-area-inset-bottom, 0px);
     --sa-left:   env(safe-area-inset-left, 0px);
+
+    /* Fixed app-bar inner height. Drives the mobile header row + matches the
+       PageHeader component's vertical rhythm so every tab lands the bar at
+       the identical Y. NOT theme-dependent — same value in light + dark. */
+    --appbar-h: 3rem;
   }
 
   .dark {
@@ -160,6 +165,32 @@
 }
 
 @layer components {
+  /*
+    iOS-style frosted-glass app bar. Theme-aware via the --background CSS
+    variable so light and dark both look correct without hex literals.
+
+    Strategy:
+      • Solid background as the fallback (set unconditionally first).
+      • @supports block overrides with translucent bg + blur + saturate when
+        the browser actually supports backdrop-filter. The -webkit-prefixed
+        property is required for iOS Safari < 18; the unprefixed property
+        covers modern Chromium / desktop Safari.
+      • saturate(180%) restores colour intensity that blur otherwise washes
+        out — the same trick UIKit's UIVisualEffectView uses.
+
+    Used by both the top mobile header and the bottom tab bar in AppLayout.
+  */
+  .app-bar {
+    background-color: hsl(var(--background));
+  }
+  @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .app-bar {
+      background-color: hsl(var(--background) / 0.72);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      backdrop-filter: saturate(180%) blur(20px);
+    }
+  }
+
   .card-soft {
     @apply rounded-xl border border-border bg-card shadow-sm;
   }

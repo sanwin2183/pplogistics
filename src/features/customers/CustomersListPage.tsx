@@ -5,6 +5,7 @@ import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Skeleton } from '../../components/ui/skeleton';
 import { EmptyState } from '../../components/EmptyState';
+import { PageHeader } from '../../components/PageHeader';
 import { fmtMoney } from '../../lib/formatters';
 import { useCustomers } from './useCustomers';
 import { CustomerFormSheet } from './CustomerFormSheet';
@@ -29,15 +30,15 @@ export function CustomersListPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Customers</h1>
-          <p className="text-sm text-muted-foreground">{customers?.length ?? 0} contacts</p>
-        </div>
-        <Button onClick={() => setCreating(true)}>
-          <Plus /> Add
-        </Button>
-      </div>
+      <PageHeader
+        title="Customers"
+        subtitle={`${customers?.length ?? 0} contacts`}
+        action={
+          <Button onClick={() => setCreating(true)}>
+            <Plus /> Add
+          </Button>
+        }
+      />
 
       <div className="relative">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />

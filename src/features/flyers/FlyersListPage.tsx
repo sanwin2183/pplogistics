@@ -7,6 +7,7 @@ import { Progress } from '../../components/ui/progress';
 import { Skeleton } from '../../components/ui/skeleton';
 import { EmptyState } from '../../components/EmptyState';
 import { FlyerStatusBadge } from '../../components/StatusBadge';
+import { PageHeader } from '../../components/PageHeader';
 import { fmtDate, fmtKg, fmtMoney } from '../../lib/formatters';
 import { ROUTES, ROUTE_LABELS, FLYER_STATUSES, FLYER_STATUS_LABELS } from '../../lib/status';
 import { useFlyers } from './useFlyers';
@@ -30,15 +31,15 @@ export function FlyersListPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Flyers</h1>
-          <p className="text-sm text-muted-foreground">Travelers carrying kg between BKK ↔ MM</p>
-        </div>
-        <Button onClick={() => setCreating(true)}>
-          <Plus /> Add
-        </Button>
-      </div>
+      <PageHeader
+        title="Flyers"
+        subtitle="Travelers carrying kg between BKK ↔ MM"
+        action={
+          <Button onClick={() => setCreating(true)}>
+            <Plus /> Add
+          </Button>
+        }
+      />
 
       <div className="flex items-center gap-2 overflow-x-auto pb-1">
         <Filter className="h-4 w-4 shrink-0 text-muted-foreground" />

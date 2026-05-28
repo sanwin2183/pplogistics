@@ -11,7 +11,20 @@
     <!-- iOS: behave like a native app when installed to the home screen. -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!--
+      `black` (not black-translucent, not default): in standalone PWA mode,
+      iOS renders the status bar as a separate OPAQUE BLACK region above the
+      WebView with WHITE clock/battery icons. Because the bar is a separate
+      region (not overlaying), env(safe-area-inset-top) collapses to 0 and
+      the admin app bar renders at the same compact --appbar-h height as in
+      mobile Safari. We pick `black` over `default` because the owner runs
+      the installed PWA in dark mode — `default` would give a LIGHT status
+      bar (dark text on light bg) which clashes above the dark header; the
+      `black` status bar blends. viewport-fit=cover above stays — the bottom
+      nav's pb-safe and the tracking page's notch clearance still depend on
+      env(safe-area-inset-*) working for the BOTTOM inset. See CLAUDE.md §19.
+    -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
     <meta name="apple-mobile-web-app-title" content="PP Logistics" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.svg" />
 

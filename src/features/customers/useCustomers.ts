@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { addDoc, collection, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { toast } from 'sonner';
 import { db } from '../../lib/firebase';
 import { fetchCol, fetchDoc, orderBy } from '../../lib/queries';
 import type { Customer } from '../../types';
@@ -35,6 +36,9 @@ export function useCreateCustomer() {
       return ref.id;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to create customer');
+    },
   });
 }
 
@@ -45,5 +49,8 @@ export function useUpdateCustomer() {
       await updateDoc(doc(db, 'customers', id), rest);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to update customer');
+    },
   });
 }

@@ -9,12 +9,19 @@ import { Label } from '../../components/ui/label';
 import { Textarea } from '../../components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter } from '../../components/ui/sheet';
+import { firstErrorMessage } from '../../lib/forms';
 import type { Customer, CustomerType } from '../../types';
 import { useCreateCustomer, useUpdateCustomer } from './useCustomers';
 
 const schema = z.object({
   name: z.string().min(1, 'Required'),
-  phone: z.string().min(4, 'Required'),
+  // Phone is optional — per §21 the owner often adds a customer before she
+  // has their phone number, and downstream uses (order display, search,
+  // sanitized PublicOrder) all tolerate empty string. If provided though,
+  // it must look like a plausible number (≥ 4 chars).
+  phone: z
+    .string()
+    .refine((v) => v.length === 0 || v.length >= 4, 'Phone looks too short — at least 4 digits'),
   telegram: z.string().optional(),
   type: z.enum(['shop', 'individual']),
   notes: z.string().optional(),
@@ -37,6 +44,7 @@ export function CustomerFormSheet({ open, customer, onClose, onCreated }: Props)
     handleSubmit,
     reset,
     setValue,
+    setFocus,
     watch,
     formState: { errors, isSubmitting },
   } = useForm<FormData>({
@@ -56,21 +64,40 @@ export function CustomerFormSheet({ open, customer, onClose, onCreated }: Props)
     }
   }, [open, customer, reset]);
 
-  const onSubmit = handleSubmit(async (data) => {
-    try {
-      if (customer) {
-        await update.mutateAsync({ ...customer, ...data });
-        toast.success('Customer updated');
-      } else {
-        const id = await create.mutateAsync(data);
-        toast.success('Customer added');
-        onCreated?.(id, data.name);
+  const onSubmit = handleSubmit(
+    async (data) => {
+      try {
+        if (customer) {
+          await update.mutateAsync({ ...customer, ...data });
+          toast.success('Customer updated');
+        } else {
+          const id = await create.mutateAsync(data);
+          toast.success('Customer added');
+          onCreated?.(id, data.name);
+        }
+        onClose();
+      } catch {
+        // mutation.onError already toasted the failure.
       }
-      onClose();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Save failed');
-    }
-  });
+    },
+    // Validation-failure handler — surface the first error as a toast AND
+    // focus the first invalid field so an off-screen inline error scrolls
+    // back into view. Was previously silent: only name/phone errors render
+    // inline, and on a small phone the failing field can be above the Save
+    // button so the owner sees nothing happen.
+    (errs) => {
+      toast.error(firstErrorMessage(errs) ?? 'Please fix the highlighted fields');
+      const firstField = Object.keys(errs)[0] as keyof FormData | undefined;
+      if (firstField) {
+        try {
+          setFocus(firstField);
+        } catch {
+          // setFocus throws for non-registered fields (e.g. the Type select
+          // which uses controlled setValue) — non-fatal, the toast still fires.
+        }
+      }
+    },
+  );
 
   const type = watch('type') as CustomerType;
 

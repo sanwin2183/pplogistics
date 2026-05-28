@@ -43,7 +43,60 @@ import { toast } from 'sonner';
  *   regardless of the user's preferred theme — no global <html>.dark
  *   toggle needed (which would briefly flicker the on-screen card during
  *   capture).
+ *
+ * Image decode wait — why decodeAllImages(node) runs before toBlob:
+ *   iOS Safari's <foreignObject> snapshot serialises each <img> by its
+ *   currently-decoded pixel state. An <img> that has loaded its src
+ *   (img.complete === true) but hasn't finished its decode tick yet
+ *   serialises as BLANK — the surrounding text and layout capture fine,
+ *   but the img slot is empty. This bit us on the payment-method QR
+ *   specifically: a ~10-50 KB base64-decoded PNG takes one event-loop
+ *   tick to fully decode after React renders, and toBlob was firing
+ *   inside that window. Calling HTMLImageElement.decode() returns a
+ *   promise that resolves once the browser has the image ready for
+ *   canvas/foreignObject — we await it on every <img> in the subtree
+ *   first. Print/PDF (window.print) wasn't affected because the print
+ *   pipeline waits for image decode itself.
  */
+/**
+ * Wait for every <img> in the capture subtree to finish decoding.
+ *
+ * HTMLImageElement.decode() returns a promise that resolves when the
+ * browser has the image ready to draw to a canvas (or foreignObject).
+ * We call it unconditionally — even when img.complete is already true,
+ * because `complete` means "the resource has been loaded" not "the
+ * pixels are decoded and ready". On iOS Safari those two states are
+ * not the same: a freshly-rendered <img src="data:image/...">
+ * frequently reports complete=true on the next animation frame but
+ * isn't fully decoded for another tick or two, and html-to-image's
+ * <foreignObject> serialise — which doesn't wait for decode itself —
+ * would capture it as blank.
+ *
+ * Each decode is wrapped with a timeout race so a stuck or rejected
+ * decode (cross-origin, malformed image) can't hang the save
+ * indefinitely. The per-<img> failure is swallowed: html-to-image
+ * will still attempt to capture whatever the browser has; the worst
+ * case is one blank slot in the saved JPG, which is no worse than the
+ * status quo without this wait.
+ */
+async function decodeAllImages(root: HTMLElement, perImageTimeoutMs = 2000): Promise<void> {
+  const imgs = Array.from(root.querySelectorAll<HTMLImageElement>('img'));
+  await Promise.all(
+    imgs.map(async (img) => {
+      try {
+        await Promise.race([
+          img.decode(),
+          new Promise<never>((_, rej) =>
+            setTimeout(() => rej(new Error('image decode timeout')), perImageTimeoutMs),
+          ),
+        ]);
+      } catch {
+        /* graceful — let html-to-image render whatever this <img> can */
+      }
+    }),
+  );
+}
+
 export function useSaveDocAsImage(filenameBase: string) {
   const [saving, setSaving] = useState(false);
 
@@ -54,6 +107,15 @@ export function useSaveDocAsImage(filenameBase: string) {
       setSaving(true);
 
       try {
+        // Force a full decode of every <img> in the capture subtree
+        // BEFORE html-to-image takes its snapshot. iOS Safari serialises
+        // not-yet-decoded <img>s as blank inside <foreignObject>; the
+        // payment QR was the canonical victim because the base64 data
+        // URI is large enough that decode took one event-loop tick
+        // beyond React's render. Print already waited for decode
+        // internally, which is why Print/PDF worked while Save did not.
+        await decodeAllImages(node);
+
         const blob = await toBlob(node, {
           pixelRatio: 2,
           backgroundColor: '#ffffff',
@@ -80,15 +142,20 @@ export function useSaveDocAsImage(filenameBase: string) {
             top: 'auto',
             pointerEvents: 'auto',
           },
+          // cacheBust:true tells html-to-image to append a query string
+          // when it fetches embedded resources. For our <img>s — every
+          // src is a data: URI and html-to-image's image-embed pass
+          // skips data URIs (isDataUrl check) — this is a no-op in the
+          // current setup. Kept on as belt-and-suspenders so any future
+          // remote <img> that sneaks into the doc would still capture
+          // fresh bytes rather than a stale cached blob.
+          cacheBust: true,
           // Universal opt-out — any DOM node marked data-capture-skip is
           // excluded from the cloned subtree before serialization. Lets us
           // put on-screen action UI (Save / Print buttons) physically
           // INSIDE the print-doc card so they're visually anchored to the
           // invoice/receipt, without those buttons showing up in the saved
           // image. Returning false from filter skips the node + descendants.
-          // (cacheBust:true was previously set to dodge cross-origin <img>
-          // cache taint; with images pre-inlined as data: URIs the option
-          // is now a no-op and was removed.)
           filter: (node) =>
             !(node instanceof HTMLElement && node.dataset.captureSkip === 'true'),
         });

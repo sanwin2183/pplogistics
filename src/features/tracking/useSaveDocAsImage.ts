@@ -44,54 +44,116 @@ import { toast } from 'sonner';
  *   toggle needed (which would briefly flicker the on-screen card during
  *   capture).
  *
- * Image decode wait — why decodeAllImages(node) runs before toBlob:
- *   iOS Safari's <foreignObject> snapshot serialises each <img> by its
- *   currently-decoded pixel state. An <img> that has loaded its src
- *   (img.complete === true) but hasn't finished its decode tick yet
- *   serialises as BLANK — the surrounding text and layout capture fine,
- *   but the img slot is empty. This bit us on the payment-method QR
- *   specifically: a ~10-50 KB base64-decoded PNG takes one event-loop
- *   tick to fully decode after React renders, and toBlob was firing
- *   inside that window. Calling HTMLImageElement.decode() returns a
- *   promise that resolves once the browser has the image ready for
- *   canvas/foreignObject — we await it on every <img> in the subtree
- *   first. Print/PDF (window.print) wasn't affected because the print
- *   pipeline waits for image decode itself.
+ * Canvas re-encode pass — why reencodeImagesViaCanvas(node) runs before toBlob:
+ *   The <foreignObject> serialise pipeline used by html-to-image
+ *   silently drops SOME <img> elements even when the src is a valid
+ *   data: URI — the surrounding text and layout serialise fine, but
+ *   the img slot is blank. Reproduces in BOTH Chromium and WebKit, so
+ *   it's NOT a decode-timing issue (we previously added img.decode()
+ *   waits with no effect). The most plausible cause is encoding traits
+ *   the SVG image decoder doesn't tolerate the way a normal <img>
+ *   paint does — progressive JPEGs, embedded ICC profile, non-trivial
+ *   EXIF orientation, unusual JFIF chunks. The payment QR is the
+ *   canonical victim because it's typically a phone-camera screenshot
+ *   of a bank-app QR, which is full of those traits.
+ *
+ *   Fix: for every <img> in the capture subtree, draw it onto an
+ *   offscreen canvas at natural dimensions and toDataURL('image/png')
+ *   to get a vanilla browser-emitted PNG, then assign that as the
+ *   <img>.src. Vanilla PNGs round-trip through foreignObject reliably
+ *   because nothing in them comes from outside the browser's encoder.
+ *
+ *   Print/PDF (window.print) wasn't affected by the original bug
+ *   because the print pipeline takes a different code path —
+ *   rasterising the layout tree directly, not via foreignObject —
+ *   which is why we keep Print path untouched and only patch the
+ *   html-to-image capture path.
  */
 /**
- * Wait for every <img> in the capture subtree to finish decoding.
+ * For each <img> in the capture subtree: draw it onto an offscreen
+ * canvas, take that canvas's PNG data URI, and assign it BACK as the
+ * <img>.src. Then await the new src's decode.
  *
- * HTMLImageElement.decode() returns a promise that resolves when the
- * browser has the image ready to draw to a canvas (or foreignObject).
- * We call it unconditionally — even when img.complete is already true,
- * because `complete` means "the resource has been loaded" not "the
- * pixels are decoded and ready". On iOS Safari those two states are
- * not the same: a freshly-rendered <img src="data:image/...">
- * frequently reports complete=true on the next animation frame but
- * isn't fully decoded for another tick or two, and html-to-image's
- * <foreignObject> serialise — which doesn't wait for decode itself —
- * would capture it as blank.
+ * Why this isn't optional:
+ *   html-to-image's <foreignObject> rasterise pipeline silently drops
+ *   some <img> elements even when the src is a perfectly valid data:
+ *   URI — the surrounding text and layout render fine but the <img>
+ *   slot serialises blank. This reproduces in BOTH Chromium and
+ *   WebKit, so it's not a decode-timing issue (we previously tried
+ *   img.decode() — no effect). The most plausible cause is encoding
+ *   traits the SVG image decoder doesn't tolerate the way a normal
+ *   <img> paint does: progressive-scan JPEG, embedded ICC profile,
+ *   non-trivial EXIF orientation, unusual JFIF chunks. The payment-
+ *   method QR is the canonical victim (it's a JPEG uploaded by the
+ *   owner; phone-camera screenshots of bank-app QRs are full of those
+ *   traits).
  *
- * Each decode is wrapped with a timeout race so a stuck or rejected
- * decode (cross-origin, malformed image) can't hang the save
- * indefinitely. The per-<img> failure is swallowed: html-to-image
- * will still attempt to capture whatever the browser has; the worst
- * case is one blank slot in the saved JPG, which is no worse than the
- * status quo without this wait.
+ *   Canvas drawImage(img, ...) re-rasterises the decoded pixels and
+ *   toDataURL('image/png') re-encodes them as a vanilla browser-emitted
+ *   PNG. Vanilla PNGs round-trip through foreignObject reliably
+ *   because nothing in them comes from outside the browser's own
+ *   encoder. Print/PDF was unaffected by the original bug because
+ *   the print pipeline takes a different code path (rasterises the
+ *   layout tree directly, not through foreignObject).
+ *
+ * Decode race + timeout so a stuck image can't hang Save indefinitely;
+ * per-<img> failures are swallowed (the <img> keeps its original src,
+ * the saved JPG is no worse than the status quo).
+ *
+ * Idempotent: re-running on an already-re-encoded subtree does another
+ * round-trip but doesn't break anything. The `saving` state in
+ * useSaveDocAsImage already prevents concurrent re-entry.
+ *
+ * Source DOM mutation: we change <img>.src on the live A4 doc, which
+ * is mounted on screen as position:fixed; opacity:0; pointer-events:
+ * none — invisible, so the user can't see the swap. The on-screen
+ * card uses a DIFFERENT <img> (with src=qrUrl) and is untouched.
  */
-async function decodeAllImages(root: HTMLElement, perImageTimeoutMs = 2000): Promise<void> {
+async function reencodeImagesViaCanvas(
+  root: HTMLElement,
+  perImageTimeoutMs = 2000,
+): Promise<void> {
   const imgs = Array.from(root.querySelectorAll<HTMLImageElement>('img'));
   await Promise.all(
     imgs.map(async (img) => {
       try {
+        // 1. Ensure the source <img> is fully decoded before we draw
+        //    it — drawImage of a half-decoded source produces a partial
+        //    or zero-pixel canvas.
         await Promise.race([
           img.decode(),
           new Promise<never>((_, rej) =>
-            setTimeout(() => rej(new Error('image decode timeout')), perImageTimeoutMs),
+            setTimeout(() => rej(new Error('decode timeout')), perImageTimeoutMs),
+          ),
+        ]);
+        const w = img.naturalWidth;
+        const h = img.naturalHeight;
+        if (!w || !h) return; // 0-sized — nothing to draw
+
+        // 2. Draw onto an offscreen canvas at natural pixel dimensions.
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(img, 0, 0, w, h);
+
+        // 3. Re-encode as a plain browser-emitted PNG.
+        const dataUrl = canvas.toDataURL('image/png');
+        if (!dataUrl || dataUrl === 'data:,') return; // toDataURL bailed
+
+        // 4. Swap the <img> over to the re-encoded src and wait for it
+        //    to decode so toBlob sees a ready image.
+        img.src = dataUrl;
+        await Promise.race([
+          img.decode(),
+          new Promise<never>((_, rej) =>
+            setTimeout(() => rej(new Error('redecode timeout')), perImageTimeoutMs),
           ),
         ]);
       } catch {
-        /* graceful — let html-to-image render whatever this <img> can */
+        /* graceful — leave the <img> with its original src; the saved
+           JPG will have the same blank-slot symptom we already had. */
       }
     }),
   );
@@ -107,14 +169,14 @@ export function useSaveDocAsImage(filenameBase: string) {
       setSaving(true);
 
       try {
-        // Force a full decode of every <img> in the capture subtree
-        // BEFORE html-to-image takes its snapshot. iOS Safari serialises
-        // not-yet-decoded <img>s as blank inside <foreignObject>; the
-        // payment QR was the canonical victim because the base64 data
-        // URI is large enough that decode took one event-loop tick
-        // beyond React's render. Print already waited for decode
-        // internally, which is why Print/PDF worked while Save did not.
-        await decodeAllImages(node);
+        // Round-trip every <img> through a canvas so the source bytes
+        // become a vanilla browser-emitted PNG before html-to-image
+        // serialises the subtree. <foreignObject> drops some <img>s
+        // (notably the payment-method QR JPEG) in both Chromium and
+        // WebKit — see reencodeImagesViaCanvas for the rationale. The
+        // re-encode also decodes the result, so toBlob sees ready
+        // images and we don't need a separate decode-only pass.
+        await reencodeImagesViaCanvas(node);
 
         const blob = await toBlob(node, {
           pixelRatio: 2,

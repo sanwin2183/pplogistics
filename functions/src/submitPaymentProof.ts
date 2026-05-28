@@ -1,9 +1,81 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { defineSecret } from 'firebase-functions/params';
 import { getFirestore, Timestamp, FieldValue } from 'firebase-admin/firestore';
 import { getApp } from 'firebase-admin/app';
 
 // Primary database is named `default` (not `(default)`) — see src/lib/firebase.ts.
 const DB_ID = 'default';
+
+// ───────────────────────────── Telegram alert config ────────────────────────────
+//
+// Owner gets a Telegram ping whenever a customer submits a payment proof.
+// Bot token is a Secret Manager secret — bound to the function via the
+// `secrets:` array in the onCall options. The chat ID is hardcoded
+// because by itself it can do nothing; only the bot token unlocks
+// sending. The send is best-effort — see notifyTelegram().
+//
+// Deploy notes (one-time setup):
+//   1. firebase functions:secrets:set TELEGRAM_BOT_TOKEN --project pp-logistics
+//      (paste the token at the prompt)
+//   2. firebase deploy --only functions --project pp-logistics
+//      (the deploy binds the secret to the function instance)
+const TELEGRAM_BOT_TOKEN = defineSecret('TELEGRAM_BOT_TOKEN');
+const TELEGRAM_CHAT_ID = 6928694676;
+
+// Base URL for the deep-link in the Telegram alert. Points at the
+// canonical Firebase Hosting URL (stable regardless of custom-domain
+// status). The owner taps the link to land on /orders/:id for review.
+const ADMIN_BASE_URL = 'https://pp-logistics.web.app';
+
+/**
+ * Send a Telegram message — best-effort, NEVER throws.
+ *
+ * 5-second AbortController timeout so a wedged Telegram response can't
+ * block the function for the Cloud Run idle timeout. Any failure
+ * (token missing, chat invalid, network, timeout) logs to console.warn
+ * and returns normally. Callers can `await` this without risk: the
+ * proof has already been recorded by the time we get here, and a
+ * Telegram failure must NEVER propagate to the customer.
+ */
+async function notifyTelegram(
+  token: string,
+  chatId: number,
+  htmlText: string,
+  timeoutMs = 5000,
+): Promise<void> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: htmlText,
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '<no body>');
+        // eslint-disable-next-line no-console
+        console.warn(`[telegram] sendMessage HTTP ${res.status}: ${errBody}`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[telegram] notify failed', err);
+  }
+}
+
+/** Escape user-supplied strings before inserting into HTML parse-mode text. */
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 /**
  * Public callable — attach a payment proof to the order identified by trackingSlug.
@@ -35,8 +107,16 @@ const DB_ID = 'default';
 export const submitPaymentProof = onCall(
   // `invoker: 'public'` grants public Cloud Run access so customers can upload
   // payment proofs without authenticating. The function itself still validates
-  // input + only rejects when the order is already paid.
-  { region: 'asia-southeast1', cors: true, invoker: 'public', maxInstances: 10 },
+  // input + only rejects when the order is already paid. The `secrets:`
+  // array binds TELEGRAM_BOT_TOKEN from Secret Manager at deploy time so
+  // we can ping the owner when a proof comes in.
+  {
+    region: 'asia-southeast1',
+    cors: true,
+    invoker: 'public',
+    maxInstances: 10,
+    secrets: [TELEGRAM_BOT_TOKEN],
+  },
   async (req) => {
     const slug = String(req.data?.slug ?? '').trim();
     const imageUrl = String(req.data?.imageUrl ?? '').trim();
@@ -83,6 +163,36 @@ export const submitPaymentProof = onCall(
       message: `Payment proof received for #${order.orderNumber}`,
       timestamp: now,
     });
+
+    // ─── Telegram alert ─────────────────────────────────────────────
+    // Best-effort. Wrapped in an OUTER try/catch so even synchronous
+    // failures (e.g. TELEGRAM_BOT_TOKEN.value() returning empty,
+    // string-builder throwing on weird order data) can't propagate.
+    // notifyTelegram itself already never throws — this is belt-and-
+    // braces. The proof is already saved; this notification is purely
+    // informational for the owner.
+    try {
+      const orderNumber = String(order.orderNumber ?? '');
+      const customerName = String(order.customerName ?? '').trim();
+      const customerFirstName = customerName.split(' ')[0] || customerName;
+      const statusLabel = String(order.status ?? 'pending').replace(/_/g, ' ');
+      // THB formatted as integer with thousands separator. The order's
+      // totalAmount is stored as a plain number; rounding here matches
+      // how the client renders fmtMoney for whole-baht amounts.
+      const amountThb = Math.round(Number(order.totalAmount ?? 0)).toLocaleString('en-US');
+      const adminUrl = `${ADMIN_BASE_URL}/orders/${doc.id}`;
+      const message =
+        `💰 <b>Payment proof submitted</b>\n\n` +
+        `Order <b>#${escapeHtml(orderNumber)}</b>\n` +
+        `Customer: ${escapeHtml(customerFirstName)}\n` +
+        `Amount: ฿${amountThb}\n` +
+        `Status: ${escapeHtml(statusLabel)}\n\n` +
+        `<a href="${adminUrl}">Review &amp; approve →</a>`;
+      await notifyTelegram(TELEGRAM_BOT_TOKEN.value(), TELEGRAM_CHAT_ID, message);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[telegram] alert path failed', err);
+    }
 
     return { ok: true };
   },

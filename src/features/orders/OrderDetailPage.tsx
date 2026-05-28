@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
@@ -46,25 +46,44 @@ import type { Order, PaymentProof } from '../../types';
  *
  * The query key includes both fields so a doc swapping from one to the
  * other (e.g. re-submission) refetches.
+ *
+ * Returns all three states (loading / error / ready) explicitly so the
+ * caller can render an error fallback — the previous version collapsed
+ * `error` and `loading` into the same "Loading proof…" branch, which left
+ * a getDownloadURL failure looking like a permanent loading state. Errors
+ * also log to console.warn with the path so a future failure tells you
+ * which file broke.
  */
 function useProofImageUrl(proof: PaymentProof | undefined): {
   url: string | undefined;
   isLoading: boolean;
+  error: Error | null;
 } {
   const path = proof?.imagePath;
   const legacy = proof?.imageUrl;
   const q = useQuery({
     queryKey: ['proofUrl', path, legacy],
     queryFn: async () => {
-      if (path) return getDownloadURL(storageRef(storage, path));
+      if (path) {
+        const url = await getDownloadURL(storageRef(storage, path));
+        // eslint-disable-next-line no-console
+        console.log('[proofUrl] resolved', path, '→', url.slice(0, 80) + '…');
+        return url;
+      }
       return legacy ?? null;
     },
     enabled: !!(path || legacy),
     staleTime: 60_000, // download URLs are stable; don't refetch on every render
+    retry: 1,
   });
+  if (q.error) {
+    // eslint-disable-next-line no-console
+    console.warn('[proofUrl] failed for path/legacy', path, legacy, q.error);
+  }
   return {
-    url: q.data ?? undefined,
+    url: typeof q.data === 'string' ? q.data : undefined,
     isLoading: q.isLoading,
+    error: (q.error as Error | null) ?? null,
   };
 }
 
@@ -90,7 +109,19 @@ export function OrderDetailPage() {
   // customer never reads from Storage; only the admin (who has read
   // permission) calls getDownloadURL. See useProofImageUrl above for the
   // legacy-fallback handling.
-  const { url: proofUrl, isLoading: proofUrlLoading } = useProofImageUrl(order?.paymentProof);
+  const {
+    url: proofUrl,
+    isLoading: proofUrlLoading,
+    error: proofUrlError,
+  } = useProofImageUrl(order?.paymentProof);
+  // Tracks whether the <img>'s own load failed (URL resolved but the
+  // browser couldn't fetch the bytes). Reset whenever the URL or the
+  // underlying proof changes so a previous failure can't poison a fresh
+  // resolution (e.g. after a re-upload).
+  const [proofImgFailed, setProofImgFailed] = useState(false);
+  useEffect(() => {
+    setProofImgFailed(false);
+  }, [proofUrl, order?.paymentProof?.imagePath, order?.paymentProof?.imageUrl]);
 
   if (isLoading) return <FullPageSpinner />;
   if (!order) return <p className="text-sm text-muted-foreground">Order not found.</p>;
@@ -315,13 +346,57 @@ export function OrderDetailPage() {
             </div>
             {order.paymentProof ? (
               <>
-                {proofUrlLoading || !proofUrl ? (
+                {proofUrlLoading ? (
                   // Resolving the download URL via getDownloadURL — admin's
                   // first paint of the proof. Subsequent visits use the
                   // query cache (staleTime: 60s) so this only flashes once
                   // per order/session.
-                  <div className="flex h-72 items-center justify-center rounded-lg border border-border bg-muted/40 text-xs text-muted-foreground">
+                  <div className="flex h-48 items-center justify-center rounded-lg border border-border bg-muted/40 text-xs text-muted-foreground">
                     Loading proof…
+                  </div>
+                ) : proofUrlError ? (
+                  // getDownloadURL threw — typically storage/unauthorized
+                  // (rule check) or storage/object-not-found (file missing
+                  // from bucket). The error is logged to console with the
+                  // path so you can dig into the actual cause.
+                  <div className="space-y-2 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-xs">
+                    <p className="font-medium text-destructive">Couldn't load proof image</p>
+                    <p className="text-destructive/90">{proofUrlError.message}</p>
+                    {order.paymentProof.imagePath && (
+                      <p className="font-mono text-[10px] text-muted-foreground break-all">
+                        path: {order.paymentProof.imagePath}
+                      </p>
+                    )}
+                  </div>
+                ) : !proofUrl ? (
+                  // Defensive: query is settled, no error, but no URL —
+                  // means the proof doc has neither imagePath nor imageUrl.
+                  // Shouldn't happen for new proofs (the function validates
+                  // imagePath); could happen for a corrupted legacy doc.
+                  <div className="rounded-lg border border-dashed border-border bg-muted/40 p-4 text-xs text-muted-foreground">
+                    No image attached to this proof.
+                  </div>
+                ) : proofImgFailed ? (
+                  // <img> resolved a URL but the browser couldn't fetch it —
+                  // e.g. download token mismatch, expired, or a network/CORS
+                  // issue. Show a link so the admin can still open the proof
+                  // in a new tab where the same URL may work or surface a
+                  // clearer error.
+                  <div className="space-y-2 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-xs">
+                    <p className="font-medium text-destructive">
+                      Image URL returned but the browser couldn't render it
+                    </p>
+                    <p className="text-destructive/90">
+                      Check the DevTools console / Network tab for the failed request.
+                    </p>
+                    <a
+                      href={proofUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-block break-all font-mono text-[10px] text-primary underline-offset-2 hover:underline"
+                    >
+                      Open URL in new tab →
+                    </a>
                   </div>
                 ) : (
                   <a
@@ -330,7 +405,16 @@ export function OrderDetailPage() {
                     rel="noreferrer"
                     className="block overflow-hidden rounded-lg border border-border"
                   >
-                    <img src={proofUrl} alt="Payment proof" className="max-h-72 w-full object-contain bg-white" />
+                    <img
+                      src={proofUrl}
+                      alt="Payment proof"
+                      className="max-h-72 w-full object-contain bg-white"
+                      onError={(e) => {
+                        // eslint-disable-next-line no-console
+                        console.warn('[proof img] failed to load', proofUrl, e);
+                        setProofImgFailed(true);
+                      }}
+                    />
                   </a>
                 )}
                 {order.paymentProof.note && (

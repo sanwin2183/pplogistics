@@ -246,11 +246,31 @@ export function OrderDetailPage() {
           </Button>
         )}
 
-        {/* Payment review section */}
-        {order.status === 'awaiting_payment' && (
+        {/*
+          Payment review section.
+
+          Visible when EITHER:
+            - the customer has uploaded a proof and the order isn't paid yet
+              (covers the "customer paid EARLY from pending/received/etc."
+              case — that proof must still surface to the admin for review
+              even though status is not 'awaiting_payment'); OR
+            - the order is at 'awaiting_payment' and no proof exists yet
+              (so the admin sees a "still waiting" prompt and the markup
+              still appears at the canonical state).
+
+          Heading text changes per case so the admin can tell at a glance
+          whether they're reviewing a normal-flow submission or an early
+          payment. Approve/Reject reuse the existing money-moving
+          mutations unchanged — useUpdateOrderStatus 'paid' branch is
+          the canonical transaction (with the prior double-count guard).
+        */}
+        {((order.paymentProof && order.status !== 'paid') || order.status === 'awaiting_payment') && (
           <div className="mt-5 space-y-3 rounded-lg border border-dashed border-status-awaiting-fg/30 bg-status-awaiting/40 p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-status-awaiting-fg">
-              <AlertCircle className="h-4 w-4" /> Awaiting payment
+              <AlertCircle className="h-4 w-4" />
+              {order.paymentProof && order.status !== 'awaiting_payment'
+                ? 'Payment proof submitted'
+                : 'Awaiting payment'}
             </div>
             {order.paymentProof ? (
               <>

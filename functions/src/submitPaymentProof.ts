@@ -12,13 +12,30 @@ const DB_ID = 'default';
  * storage.rules). This function records the URL + note on the Firestore order,
  * appends a status-history entry, and writes an activity row for the admin feed.
  *
- * The status is NOT changed here — admin must approve via the detail page,
- * which sets status='paid' and paymentApprovedAt.
+ * Status guard:
+ *   Customers are allowed to pay EARLY — from any non-paid status (pending,
+ *   received, with_flyer, in_transit, delivered, awaiting_payment). The only
+ *   rejection here is `status === 'paid'`, to prevent a double-submit on a
+ *   settled order. The order's `status` field is NOT changed by this function
+ *   under any circumstance — only paymentProof / paymentReceivedAt /
+ *   statusHistory[append] / updatedAt are written. Rollups (customer.
+ *   outstandingBalance, totalSpent; flyer.kgUsed) are NEVER touched here.
+ *
+ * Money movement happens ONLY when the admin approves via the detail page,
+ * which calls useUpdateOrderStatus with next:'paid' — that one transaction
+ * is the canonical (and double-count-guarded) place where outstandingBalance
+ * decreases and totalSpent increases.
+ *
+ * Idempotency:
+ *   paymentProof is a single object field (NOT an array). A second submit
+ *   replaces the previous proof in place — useful when a customer's first
+ *   screenshot was unreadable or was rejected by the admin. statusHistory
+ *   accumulates one entry per submit as a deliberate audit trail.
  */
 export const submitPaymentProof = onCall(
   // `invoker: 'public'` grants public Cloud Run access so customers can upload
   // payment proofs without authenticating. The function itself still validates
-  // input + only attaches the proof when the order is in 'awaiting_payment'.
+  // input + only rejects when the order is already paid.
   { region: 'asia-southeast1', cors: true, invoker: 'public', maxInstances: 10 },
   async (req) => {
     const slug = String(req.data?.slug ?? '').trim();
@@ -35,18 +52,23 @@ export const submitPaymentProof = onCall(
     const doc = qs.docs[0];
     const order = doc.data() as Record<string, unknown>;
 
-    // Only accept proofs when awaiting payment — silently ignore otherwise to avoid
-    // leaking status info.
-    if (order.status !== 'awaiting_payment') {
-      throw new HttpsError('failed-precondition', 'Order is not awaiting payment');
+    // Only rejection: order is already paid. Prevents double-submit on a
+    // settled order. Customers can pay EARLY from any other status.
+    if (order.status === 'paid') {
+      throw new HttpsError('failed-precondition', 'This order is already paid');
     }
 
     const now = Timestamp.now();
     await doc.ref.update({
+      // Replace any existing proof in place — idempotent re-submit.
       paymentProof: { uploadedAt: now, imageUrl, note: note ?? null },
       paymentReceivedAt: now,
+      // statusHistory entry uses the order's CURRENT status as the label
+      // (not a hard-coded 'awaiting_payment') so an early-paid pending
+      // order's audit trail accurately records what state it was in
+      // when the customer submitted.
       statusHistory: FieldValue.arrayUnion({
-        status: 'awaiting_payment',
+        status: order.status ?? 'pending',
         timestamp: now,
         note: 'Customer uploaded payment proof',
       }),

@@ -25,10 +25,15 @@ const TYPE_LABEL: Record<string, string> = {
  * NOT shown here (lives in <Invoice />) — this is purely "how to pay".
  *
  * Heading copy adapts to status: informational ("How to pay") for early
- * statuses, action ("Pay now") once status === 'awaiting_payment'. The
- * submitPaymentProof callable itself still rejects pre-awaiting-payment
- * submissions; if a customer pays early and uploads, the function returns
- * "Order is not awaiting payment" and the toast.error surfaces it.
+ * statuses, action ("Pay now") once status === 'awaiting_payment'.
+ *
+ * Customers can pay EARLY: the submitPaymentProof callable accepts proofs
+ * at any non-paid status (the only rejection is `status === 'paid'`). The
+ * uploaded proof never changes the order's status — it just records that
+ * a customer has submitted a screenshot for admin review. The admin
+ * approves separately via the OrderDetailPage; only that approval moves
+ * outstandingBalance → totalSpent (see useUpdateOrderStatus's 'paid'
+ * branch, the only money-moving transaction).
  */
 export function PaymentSection({
   order,

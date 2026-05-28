@@ -14,7 +14,10 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      'flex h-10 w-full items-center justify-between rounded-lg border border-input bg-background px-3 py-2 text-sm shadow-sm',
+      // Radix renders a <button>, so iOS doesn't strictly zoom on focus — but
+      // matching the 16-mobile / 14-desktop sizing of <Input>/<Textarea> keeps
+      // forms visually consistent when these sit next to each other.
+      'flex h-10 w-full items-center justify-between rounded-lg border border-input bg-background px-3 py-2 text-base lg:text-sm shadow-sm',
       'placeholder:text-muted-foreground',
       'focus:outline-none focus:border-primary',
       'disabled:cursor-not-allowed disabled:opacity-50',

@@ -146,6 +146,20 @@
     @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
   }
 
+  /*
+    iOS Safari/PWA auto-zooms into focused form controls whose computed
+    font-size is under 16px, and never zooms back out. The component
+    primitives in src/components/ui already use `text-base lg:text-sm` so
+    they render 16px on mobile — this rule is the safety net for any raw
+    <input>/<textarea>/<select> element that bypasses those primitives.
+    The lg: breakpoint (1024px) marks the mobile/desktop split per §7.
+  */
+  @media (max-width: 1023.98px) {
+    input, textarea, select {
+      font-size: 16px;
+    }
+  }
+
   button, a {
     -webkit-tap-highlight-color: transparent;
     -webkit-touch-callout: none;

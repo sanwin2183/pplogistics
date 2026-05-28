@@ -61,6 +61,23 @@ export function useSaveDocAsImage(filenameBase: string) {
           // "screenshot" and is heavier.
           type: 'image/jpeg',
           quality: 0.95,
+          // Override styles on the cloned root before rendering. The
+          // off-screen .doc-page-a4 element is opacity:0 / pointer-events:
+          // none / position:fixed on screen so the user never sees it; we
+          // need to neutralise those so the foreignObject's clone renders
+          // visibly inside the SVG snapshot. (Without `opacity: '1'` here
+          // the saved JPG is blank-white — canvas.fillStyle=#fff then
+          // drawImage of a fully transparent clone.) `position: static`
+          // also lets the clone sit at the foreignObject's natural origin
+          // instead of inheriting fixed positioning that would push it
+          // outside the visible box.
+          style: {
+            opacity: '1',
+            position: 'static',
+            left: 'auto',
+            top: 'auto',
+            pointerEvents: 'auto',
+          },
           // Universal opt-out — any DOM node marked data-capture-skip is
           // excluded from the cloned subtree before serialization. Lets us
           // put on-screen action UI (Save / Print buttons) physically

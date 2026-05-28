@@ -231,8 +231,29 @@
   */
   .doc-page-a4 {
     position: fixed;
-    left: -200vw;
+    /*
+      We deliberately position the A4 doc at the viewport's TOP-LEFT
+      CORNER (left:0, top:0) and hide it via opacity:0, instead of moving
+      it off-screen via left:-200vw.
+
+      Why: html-to-image clones the source DOM and renders the clone
+      inside an <svg><foreignObject>. iOS Safari skips the content-paint
+      pass for elements far outside the viewport (paint optimisation),
+      and when the foreignObject's <img> tries to render that clone it
+      decodes to a fully transparent bitmap — producing a blank-white
+      saved JPG (canvas.fillStyle=#fff then drawImage of an empty
+      source). Keeping the element IN the viewport (just invisible)
+      forces the paint pass to run and the clone to have content to
+      render. pointer-events:none keeps it click-through so the
+      invisible overlay can't intercept taps on the visible UI below.
+
+      The clone's opacity is overridden back to 1 by useSaveDocAsImage
+      via toBlob's `style` option, so what gets saved IS visible.
+      @media print does the same override for window.print().
+    */
+    left: 0;
     top: 0;
+    opacity: 0;
     width: 210mm;
     min-height: 297mm;
     padding: 15mm;
@@ -347,6 +368,9 @@
       padding: 0 !important;
       pointer-events: auto !important;
       background: transparent !important;
+      /* Counteract the opacity:0 we apply on screen — without this the
+         print render would also be transparent. */
+      opacity: 1 !important;
     }
     .doc-page-a4 table,
     .doc-page-a4 section,

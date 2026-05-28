@@ -466,6 +466,7 @@ Remove-Item $tmp.FullName
 - **`useStandalone()` returns false during SSR** but we don't SSR, so this is fine.
 - **`OrderFormPage` calls `useFieldArray` for items + assignments** — don't replace with plain state, RHF needs it for proper key tracking.
 - **`MoneyDisplay` accepts negatives** and tints them with `text-destructive` when `signed` is true. Used in the "Payout" line of the profit preview.
+- **The admin app bar is intentionally taller in the installed standalone PWA than in mobile Safari.** In Safari the bar is ~48 px (just the inner `--appbar-h` row); in the home-screen-installed PWA on iPhone it extends to ~107 px because `viewport-fit=cover` + `apple-mobile-web-app-status-bar-style=black-translucent` (index.html) make the WebView edge-to-edge, so `env(safe-area-inset-top)` returns the Dynamic Island inset (~59 px) and `pt-safe` on the `<header>` adds it to the bar. The bar and the page title both shift down by the same inset, so they stay consistent with each other — this is the iOS edge-to-edge native pattern, not a bug. Do **not** "fix" by switching the status-bar-style or removing `viewport-fit=cover`; both would break the translucent-glass-under-status-bar look and the bottom-nav home-indicator spacing respectively.
 
 ## 20. Style for git commits
 

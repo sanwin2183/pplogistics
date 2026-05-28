@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useMemo, useRef, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -23,23 +23,31 @@ import { useUpcomingFlyers } from '../flyers/useFlyers';
 import { useSettings } from '../settings/useSettings';
 import { useCreateOrder } from './useOrders';
 import { CustomerFormSheet } from '../customers/CustomerFormSheet';
-import { firstErrorMessage } from '../../lib/forms';
+import { firstFieldError, type FieldErrorHit } from '../../lib/forms';
 import dayjs from 'dayjs';
 
+// Field-named validation messages.
+//
+// Before: bare 'Required' strings produced a toast that said only "Required"
+// with no field name, and per-row inline errors joined to "Required · ..."
+// equally anonymous. The schema is now the single source of truth for what
+// the failing field is called, so both the toast and the inline error stay
+// in sync — and any walker (see firstFieldError in lib/forms) can surface
+// them verbatim.
 const itemSchema = z.object({
-  description: z.string().min(1, 'Required'),
-  categoryId: z.string().min(1, 'Required'),
+  description: z.string().min(1, 'Description is required'),
+  categoryId: z.string().min(1, 'Category is required'),
   categoryName: z.string(),
-  weightKg: z.coerce.number().min(0.01, 'Min 0.01 kg'),
-  ratePerKg: z.coerce.number().min(0),
+  weightKg: z.coerce.number().min(0.01, 'Weight must be at least 0.01 kg'),
+  ratePerKg: z.coerce.number().min(0, 'Rate must be at least 0'),
   subtotal: z.coerce.number(),
 });
 
 const assignmentSchema = z.object({
-  flyerId: z.string().min(1, 'Required'),
+  flyerId: z.string().min(1, 'Flyer is required'),
   flyerName: z.string(),
-  weightKg: z.coerce.number().min(0.01),
-  payoutRatePerKg: z.coerce.number().min(0),
+  weightKg: z.coerce.number().min(0.01, 'Weight must be at least 0.01 kg'),
+  payoutRatePerKg: z.coerce.number().min(0, 'Payout rate must be at least 0'),
   payoutAmount: z.coerce.number(),
 });
 
@@ -77,7 +85,32 @@ export function OrderFormPage() {
 
   const [showNewCustomer, setShowNewCustomer] = useState(false);
 
+  // The default category we slot into new item rows. Prefer "Other" by name
+  // (the seeded catch-all) and fall back to the first alphabetical category
+  // if the owner renamed it. addItem() preloads this so a row that the owner
+  // leaves alone still passes validation — kills the silent-trap where
+  // description/weight/rate look filled but categoryId is empty.
+  const defaultCategory = useMemo(
+    () => categories?.find((c) => c.name === 'Other') ?? categories?.[0],
+    [categories],
+  );
+
   const defaultEnabledMethods = useMemo(() => settings?.payment.methods.filter((m) => m.isActive).map((m) => m.id) ?? [], [settings]);
+
+  // Per-row scroll targets. Indexed by useFieldArray position; we rebuild
+  // these every render so removed rows don't leave dangling refs. Used by
+  // the onInvalid handler to scroll the first errored row into view —
+  // critical on mobile where the offending row is often offscreen below
+  // the sticky bottom Submit bar.
+  const itemRowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const flyerRowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const customerSectionRef = useRef<HTMLElement | null>(null);
+
+  // Track which item rows the owner has explicitly picked a category for, so
+  // we only show the "still on Other (default)" nudge on rows that the owner
+  // never touched. Keyed by stable useFieldArray field.id so adding/removing
+  // rows doesn't reshuffle the set.
+  const [touchedCategoryRows, setTouchedCategoryRows] = useState<Set<string>>(new Set());
 
   const {
     register,
@@ -144,23 +177,55 @@ export function OrderFormPage() {
         toast.error(e instanceof Error ? e.message : 'Failed');
       }
     },
-    // Validation-failure handler — surface the FIRST problem as a toast so the
-    // user isn't left staring at a button that "does nothing".
+    // Validation-failure handler — surface the FIRST problem as a labeled
+    // toast AND scroll the offending row into view. Before: bare "Required"
+    // toast, no idea which field or row; on a long form the inline error
+    // was often offscreen below the sticky submit bar.
     (errs) => {
-      const first = firstErrorMessage(errs);
-      toast.error(first ?? 'Please fix the highlighted fields');
+      const hit = firstFieldError(errs);
+      if (hit) {
+        toast.error(labelForError(hit));
+        scrollToError(hit);
+      } else {
+        toast.error('Please fix the highlighted fields');
+      }
       // Helpful for diagnosing edge cases via remote debugging.
       console.warn('[OrderForm] invalid:', errs);
     },
   );
 
+  /** Format a path-aware FieldErrorHit into a toast-ready label that names
+   *  the row + field. e.g. ['items', 2, 'categoryId'] → "Item 3: Category is required". */
+  function labelForError(hit: FieldErrorHit): string {
+    const [k0, k1] = hit.path;
+    if (k0 === 'items' && typeof k1 === 'number') return `Item ${k1 + 1}: ${hit.message}`;
+    if (k0 === 'flyerAssignments' && typeof k1 === 'number') return `Flyer assignment ${k1 + 1}: ${hit.message}`;
+    return hit.message;
+  }
+
+  /** Scroll the user to whatever needs fixing. block:'center' lands the row
+   *  mid-screen above the sticky submit bar. Falls back to scrollTop(0) for
+   *  top-level errors (e.g. customer not picked). */
+  function scrollToError(hit: FieldErrorHit) {
+    const [k0, k1] = hit.path;
+    let el: HTMLElement | null = null;
+    if (k0 === 'items' && typeof k1 === 'number') el = itemRowRefs.current[k1] ?? null;
+    else if (k0 === 'flyerAssignments' && typeof k1 === 'number') el = flyerRowRefs.current[k1] ?? null;
+    else if (k0 === 'customerId') el = customerSectionRef.current;
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    else window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
   function addItem() {
+    // Preload the default category so the row passes validation as-is.
+    // ratePerKg comes from the category's defaultRatePerKg per §5; weight
+    // starts at 0 so subtotal is also 0 until the owner types a weight.
     items.append({
       description: '',
-      categoryId: '',
-      categoryName: '',
+      categoryId: defaultCategory?.id ?? '',
+      categoryName: defaultCategory?.name ?? '',
       weightKg: 0,
-      ratePerKg: 0,
+      ratePerKg: defaultCategory?.defaultRatePerKg ?? 0,
       subtotal: 0,
     });
   }
@@ -188,7 +253,7 @@ export function OrderFormPage() {
 
       <form onSubmit={onSubmit} className="space-y-6">
         {/* --- 1. Customer --- */}
-        <section className="card-soft p-5">
+        <section ref={customerSectionRef} className="card-soft p-5">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold">Customer</h2>
             <Button type="button" variant="ghost" size="sm" onClick={() => setShowNewCustomer(true)}>
@@ -211,12 +276,32 @@ export function OrderFormPage() {
         <section className="card-soft p-5">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold">Items</h2>
-            <Button type="button" variant="ghost" size="sm" onClick={addItem}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={addItem}
+              disabled={categories.length === 0}
+            >
               <Plus /> Add item
             </Button>
           </div>
 
-          {!items.fields.length && (
+          {/* Empty-state — no categories seeded, dropdown would be unfillable.
+              We hide Add buttons (disabled above + replaced empty-row CTA) and
+              point the owner at /categories instead of letting them open an
+              empty Select that can never satisfy the required rule. */}
+          {categories.length === 0 && (
+            <div className="rounded-lg border border-dashed border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+              No categories yet — add them in{' '}
+              <Link to="/categories" className="font-medium text-primary underline-offset-2 hover:underline">
+                Settings → Categories
+              </Link>{' '}
+              before creating an order.
+            </div>
+          )}
+
+          {!items.fields.length && categories.length > 0 && (
             <button
               type="button"
               onClick={addItem}
@@ -229,12 +314,32 @@ export function OrderFormPage() {
           <div className="space-y-3">
             {items.fields.map((field, i) => {
               const item = watchedItems[i];
+              const itemError = errors.items?.[i];
+              const categoryInvalid = !!itemError?.categoryId;
+              // Untouched-Other nudge: the row is still on its preloaded
+              // default category (Other) AND the owner has never tapped the
+              // dropdown. Not an error — soft hint so glancing down a
+              // multi-row order surfaces "Other" rows for review.
+              const isUntouchedOther =
+                !!defaultCategory &&
+                item?.categoryId === defaultCategory.id &&
+                !touchedCategoryRows.has(field.id);
               return (
-                <div key={field.id} className="space-y-2 rounded-lg border border-border p-3">
+                <div
+                  key={field.id}
+                  ref={(el) => {
+                    itemRowRefs.current[i] = el;
+                  }}
+                  className="space-y-2 rounded-lg border border-border p-3"
+                >
                   <div className="flex items-start gap-2">
                     <div className="flex-1">
                       <Input
                         placeholder="Description (e.g. T-shirts)"
+                        aria-invalid={!!itemError?.description || undefined}
+                        className={cn(
+                          itemError?.description && 'border-destructive focus:border-destructive',
+                        )}
                         {...register(`items.${i}.description`)}
                       />
                     </div>
@@ -253,15 +358,36 @@ export function OrderFormPage() {
                             onValueChange={(v) => {
                               const cat = categories.find((c) => c.id === v);
                               if (cat) {
+                                // f.onChange keeps the Controller's own dirty/
+                                // touched bookkeeping in sync alongside the
+                                // setValue calls that update the sibling
+                                // categoryName/ratePerKg/subtotal fields.
+                                f.onChange(cat.id);
                                 setValue(`items.${i}.categoryId`, cat.id);
                                 setValue(`items.${i}.categoryName`, cat.name);
                                 setValue(`items.${i}.ratePerKg`, cat.defaultRatePerKg);
                                 const w = Number(watch(`items.${i}.weightKg`)) || 0;
                                 setValue(`items.${i}.subtotal`, +(cat.defaultRatePerKg * w).toFixed(2));
+                                // Mark this row as user-curated so the
+                                // untouched-Other nudge disappears.
+                                setTouchedCategoryRows((prev) => {
+                                  if (prev.has(field.id)) return prev;
+                                  const next = new Set(prev);
+                                  next.add(field.id);
+                                  return next;
+                                });
                               }
                             }}
                           >
-                            <SelectTrigger><SelectValue placeholder="Category" /></SelectTrigger>
+                            <SelectTrigger
+                              aria-invalid={categoryInvalid || undefined}
+                              className={cn(
+                                categoryInvalid &&
+                                  'border-destructive ring-2 ring-destructive/20 focus:border-destructive',
+                              )}
+                            >
+                              <SelectValue placeholder="Category" />
+                            </SelectTrigger>
                             <SelectContent>
                               {categories.map((c) => (
                                 <SelectItem key={c.id} value={c.id}>
@@ -272,6 +398,11 @@ export function OrderFormPage() {
                           </Select>
                         )}
                       />
+                      {isUntouchedOther && (
+                        <p className="mt-1 text-[11px] italic text-muted-foreground">
+                          Default — change if a specific category fits
+                        </p>
+                      )}
                     </div>
                     <Input
                       type="number"
@@ -279,6 +410,10 @@ export function OrderFormPage() {
                       min={0}
                       inputMode="decimal"
                       placeholder="kg"
+                      aria-invalid={!!itemError?.weightKg || undefined}
+                      className={cn(
+                        itemError?.weightKg && 'border-destructive focus:border-destructive',
+                      )}
                       {...register(`items.${i}.weightKg`, {
                         onChange: (e) => {
                           const w = Number(e.target.value) || 0;
@@ -293,6 +428,10 @@ export function OrderFormPage() {
                       min={0}
                       inputMode="decimal"
                       placeholder="THB/kg"
+                      aria-invalid={!!itemError?.ratePerKg || undefined}
+                      className={cn(
+                        itemError?.ratePerKg && 'border-destructive focus:border-destructive',
+                      )}
                       {...register(`items.${i}.ratePerKg`, {
                         onChange: (e) => {
                           const r = Number(e.target.value) || 0;
@@ -306,14 +445,15 @@ export function OrderFormPage() {
                     <span className="text-muted-foreground">Subtotal</span>
                     <span className="font-medium tabular-nums">{fmtMoney(item?.subtotal)}</span>
                   </div>
-                  {/* Per-item validation errors. */}
-                  {(() => {
-                    const e = errors.items?.[i];
-                    if (!e) return null;
+                  {/* Per-item validation errors. Messages now name the field
+                      (e.g. "Category is required") so the joined output is
+                      self-labeling — no manual prefix needed. */}
+                  {itemError && (() => {
                     const msgs = [
-                      e.description?.message,
-                      e.categoryId?.message,
-                      e.weightKg?.message,
+                      itemError.description?.message,
+                      itemError.categoryId?.message,
+                      itemError.weightKg?.message,
+                      itemError.ratePerKg?.message,
                     ].filter(Boolean);
                     return msgs.length ? (
                       <p className="text-xs text-destructive">{msgs.join(' · ')}</p>
@@ -365,8 +505,24 @@ export function OrderFormPage() {
               const a = watchedAssignments[i];
               const flyer = flyers.find((f) => f.id === a?.flyerId);
               const flyerRemaining = flyer ? flyer.kgAvailable - flyer.kgUsed : 0;
+              const assignmentError = errors.flyerAssignments?.[i];
+              // The refine() error on the parent array can stringify to an
+              // object-with-message at this index slot — guard with Array.isArray
+              // for the (non-existent in practice but typed) array case.
+              const flyerInvalid =
+                !!assignmentError && !Array.isArray(assignmentError) && !!assignmentError.flyerId;
+              const assignmentWeightInvalid =
+                !!assignmentError && !Array.isArray(assignmentError) && !!assignmentError.weightKg;
+              const assignmentRateInvalid =
+                !!assignmentError && !Array.isArray(assignmentError) && !!assignmentError.payoutRatePerKg;
               return (
-                <div key={field.id} className="space-y-2 rounded-lg border border-border p-3">
+                <div
+                  key={field.id}
+                  ref={(el) => {
+                    flyerRowRefs.current[i] = el;
+                  }}
+                  className="space-y-2 rounded-lg border border-border p-3"
+                >
                   <div className="flex items-start gap-2">
                     <div className="flex-1">
                       <Controller
@@ -378,6 +534,9 @@ export function OrderFormPage() {
                             onValueChange={(v) => {
                               const fl = flyers.find((x) => x.id === v);
                               if (fl) {
+                                // f.onChange keeps Controller dirty/touched
+                                // state in sync (see Items dropdown above).
+                                f.onChange(fl.id);
                                 setValue(`flyerAssignments.${i}.flyerId`, fl.id);
                                 setValue(`flyerAssignments.${i}.flyerName`, fl.name);
                                 setValue(`flyerAssignments.${i}.payoutRatePerKg`, fl.ratePerKg);
@@ -386,7 +545,15 @@ export function OrderFormPage() {
                               }
                             }}
                           >
-                            <SelectTrigger><SelectValue placeholder="Choose flyer" /></SelectTrigger>
+                            <SelectTrigger
+                              aria-invalid={flyerInvalid || undefined}
+                              className={cn(
+                                flyerInvalid &&
+                                  'border-destructive ring-2 ring-destructive/20 focus:border-destructive',
+                              )}
+                            >
+                              <SelectValue placeholder="Choose flyer" />
+                            </SelectTrigger>
                             <SelectContent>
                               {flyers.map((fl) => (
                                 <SelectItem key={fl.id} value={fl.id}>
@@ -410,6 +577,10 @@ export function OrderFormPage() {
                         min={0}
                         inputMode="decimal"
                         placeholder="kg"
+                        aria-invalid={assignmentWeightInvalid || undefined}
+                        className={cn(
+                          assignmentWeightInvalid && 'border-destructive focus:border-destructive',
+                        )}
                         {...register(`flyerAssignments.${i}.weightKg`, {
                           onChange: (e) => {
                             const w = Number(e.target.value) || 0;
@@ -430,6 +601,10 @@ export function OrderFormPage() {
                       min={0}
                       inputMode="decimal"
                       placeholder="Payout/kg"
+                      aria-invalid={assignmentRateInvalid || undefined}
+                      className={cn(
+                        assignmentRateInvalid && 'border-destructive focus:border-destructive',
+                      )}
                       {...register(`flyerAssignments.${i}.payoutRatePerKg`, {
                         onChange: (e) => {
                           const r = Number(e.target.value) || 0;
@@ -443,14 +618,14 @@ export function OrderFormPage() {
                     <span className="text-muted-foreground">Payout</span>
                     <span className="font-medium tabular-nums">{fmtMoney(a?.payoutAmount)}</span>
                   </div>
-                  {/* Per-assignment validation errors. */}
-                  {(() => {
-                    const e = errors.flyerAssignments?.[i];
-                    if (!e || Array.isArray(e)) return null;
+                  {/* Per-assignment validation errors. Messages now name the
+                      field (e.g. "Flyer is required") — joined output is
+                      self-labeling. */}
+                  {assignmentError && !Array.isArray(assignmentError) && (() => {
                     const msgs = [
-                      e.flyerId?.message,
-                      e.weightKg?.message,
-                      e.payoutRatePerKg?.message,
+                      assignmentError.flyerId?.message,
+                      assignmentError.weightKg?.message,
+                      assignmentError.payoutRatePerKg?.message,
                     ].filter(Boolean);
                     return msgs.length ? (
                       <p className="text-xs text-destructive">{msgs.join(' · ')}</p>

@@ -457,14 +457,26 @@ export function useRejectPaymentProof() {
   return useMutation({
     mutationFn: async ({ order, note }: { order: Order; note: string }) => {
       const ref = doc(db, 'orders', order.id);
-      // Roll back to awaiting_payment and record the rejection in history; clear paymentProof.
+      // Clear the proof and record the rejection in history. Status is NOT
+      // changed — this is the simple rule that handles both the canonical
+      // case (proof rejected while at awaiting_payment → stays at
+      // awaiting_payment, customer re-uploads) and the early-payment case
+      // (proof rejected while still at pending/received/with_flyer/
+      // in_transit/delivered → stays at that logistics state, doesn't
+      // skip the flow back to awaiting_payment). The previous code
+      // hard-coded a write to status:'awaiting_payment' which broke the
+      // early-payment case by yanking in-flight orders back to a state
+      // they had not actually reached.
+      //
+      // The statusHistory entry's `status` label mirrors the order's
+      // CURRENT status so the audit trail reads correctly — same pattern
+      // submitPaymentProof now uses for its "proof uploaded" entry.
       const entry: StatusHistoryEntry = {
-        status: 'awaiting_payment',
+        status: order.status,
         timestamp: Timestamp.now(),
         note: `Payment rejected: ${note}`,
       };
       await updateDoc(ref, {
-        status: 'awaiting_payment',
         paymentProof: null,
         statusHistory: arrayUnion(entry),
         updatedAt: serverTimestamp(),

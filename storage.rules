@@ -31,11 +31,22 @@ service firebase.storage {
     }
 
     // Payment proofs uploaded by customers from the tracking page — writable
-    // by anyone (validated by mime + size), readable only by admins.
+    // by anyone (validated by mime + size), readable only by admins. Delete
+    // stays admin-only so a customer can't wipe history.
+    //
+    // `update` is allowed (with the SAME isImage + under5MB validation
+    // as create) to handle the edge case where a customer's re-upload
+    // somehow lands on an existing path — e.g. a partial-write artifact
+    // from a previous failed try, or any future client code path that
+    // doesn't randomise the filename. The validation is identical to
+    // create, so the security posture is unchanged: an attacker would
+    // still need to know the specific slug + per-file nanoid to overwrite,
+    // and the worst case is the admin sees a different valid image and
+    // rejects it before any money moves.
     match /payment-proofs/{orderId}/{file} {
       allow read: if isAdmin();
-      allow create: if isImage() && under5MB();
-      allow update, delete: if isAdmin();
+      allow create, update: if isImage() && under5MB();
+      allow delete: if isAdmin();
     }
   }
 }

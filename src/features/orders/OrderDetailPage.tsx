@@ -84,22 +84,37 @@ export function OrderDetailPage() {
 
   async function onAdvance(targetStatus = next!) {
     if (!order) return;
-    await advance.mutateAsync({ order, next: targetStatus });
-    toast.success(`Marked ${targetStatus.replace('_', ' ')}`);
+    try {
+      await advance.mutateAsync({ order, next: targetStatus });
+      toast.success(`Marked ${targetStatus.replace('_', ' ')}`);
+    } catch {
+      // useUpdateOrderStatus.onError already surfaced the failure as a toast.
+      // The catch is here to prevent the rejected mutateAsync promise from
+      // becoming an unhandled rejection, which was the original silent-failure
+      // mode that hid the underlying arrayUnion(undefined) bug.
+    }
   }
 
   async function approvePayment() {
     if (!order) return;
-    await advance.mutateAsync({ order, next: 'paid', note: 'Payment approved' });
-    toast.success('Payment approved');
+    try {
+      await advance.mutateAsync({ order, next: 'paid', note: 'Payment approved' });
+      toast.success('Payment approved');
+    } catch {
+      // mutation.onError already toasted.
+    }
   }
 
   async function rejectPayment() {
     if (!order || !rejectNote.trim()) return;
-    await reject.mutateAsync({ order, note: rejectNote.trim() });
-    setRejectOpen(false);
-    setRejectNote('');
-    toast.success('Payment proof rejected');
+    try {
+      await reject.mutateAsync({ order, note: rejectNote.trim() });
+      setRejectOpen(false);
+      setRejectNote('');
+      toast.success('Payment proof rejected');
+    } catch {
+      // mutation.onError already toasted.
+    }
   }
 
   async function onPickPhoto(file: File) {

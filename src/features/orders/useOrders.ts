@@ -10,6 +10,7 @@ import {
   arrayUnion,
   deleteDoc,
 } from 'firebase/firestore';
+import { toast } from 'sonner';
 import { db } from '../../lib/firebase';
 import { fetchCol, fetchDoc, orderBy, where } from '../../lib/queries';
 import type {
@@ -134,7 +135,16 @@ export function useUpdateOrderStatus() {
   return useMutation({
     mutationFn: async ({ order, next, note }: { order: Order; next: OrderStatus; note?: string }) => {
       const ref = doc(db, 'orders', order.id);
-      const entry: StatusHistoryEntry = { status: next, timestamp: Timestamp.now(), note };
+      // Build the history entry so `note` is OMITTED when undefined — Firestore
+      // SDK v11 rejects `note: undefined` inside arrayUnion() before any network
+      // call, which was silently failing every "Mark Received / Hand to flyer /
+      // Flight departed / Mark delivered / Request payment" tap (none of those
+      // pass a note). Approve-payment worked because it passes a string note.
+      const entry: StatusHistoryEntry = {
+        status: next,
+        timestamp: Timestamp.now(),
+        ...(note != null ? { note } : {}),
+      };
 
       // Side effects on certain transitions:
       const extras: Record<string, unknown> = {};
@@ -173,6 +183,11 @@ export function useUpdateOrderStatus() {
       qc.invalidateQueries({ queryKey: KEY });
       qc.invalidateQueries({ queryKey: [...KEY, vars.order.id] });
       qc.invalidateQueries({ queryKey: ['customers'] });
+    },
+    // Surface any failure as a toast so a tap is never silent. Callers may
+    // additionally try/catch around mutateAsync for context-specific UX.
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to update order status');
     },
   });
 }
@@ -229,6 +244,9 @@ export function useRejectPaymentProof() {
     onSuccess: (_d, vars) => {
       qc.invalidateQueries({ queryKey: KEY });
       qc.invalidateQueries({ queryKey: [...KEY, vars.order.id] });
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to reject payment proof');
     },
   });
 }

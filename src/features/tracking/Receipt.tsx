@@ -12,8 +12,9 @@ import type { PublicOrder } from '../../types';
  * Same dual-render shape as Invoice:
  *   1. On-screen .card-soft card with Save / Print toolbar at the bottom
  *      (tagged .print-screen-hidden so @media print hides it).
- *   2. Off-screen .doc-page-a4 — A4 portrait, captured by html-to-image
- *      and promoted to the print target by @media print rules.
+ *   2. Off-screen .doc-page-a4 — A4 portrait, captured by html2canvas
+ *      (see useSaveDocAsImage) and promoted to the print target by
+ *      @media print rules.
  *
  * Images on the A4 doc: business.logoDataUri is inlined by the
  * getTrackingOrder Cloud Function (server-side fetch + base64). On-screen

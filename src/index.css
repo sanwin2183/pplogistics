@@ -216,8 +216,8 @@
         stabilises) but positioned off-screen via `position: fixed; left:
         -200vw` so the user never sees it. The on-screen .card-soft
         Invoice/Receipt is what they interact with.
-      - Sized to A4 portrait (210 × 297 mm with 15 mm padding) so
-        html-to-image's snapshot lands at A4 proportions, not the tall
+      - Sized to A4 portrait (210 × 297 mm with 15 mm padding) so the
+        html2canvas snapshot lands at A4 proportions, not the tall
         narrow phone-card shape.
       - Forces LIGHT theme tokens on the subtree by overriding the
         same CSS variables used by Tailwind's color utilities. This means
@@ -236,16 +236,17 @@
       CORNER (left:0, top:0) and hide it via opacity:0, instead of moving
       it off-screen via left:-200vw.
 
-      Why: html-to-image clones the source DOM and renders the clone
-      inside an <svg><foreignObject>. iOS Safari skips the content-paint
-      pass for elements far outside the viewport (paint optimisation),
-      and when the foreignObject's <img> tries to render that clone it
-      decodes to a fully transparent bitmap — producing a blank-white
-      saved JPG (canvas.fillStyle=#fff then drawImage of an empty
-      source). Keeping the element IN the viewport (just invisible)
-      forces the paint pass to run and the clone to have content to
-      render. pointer-events:none keeps it click-through so the
-      invisible overlay can't intercept taps on the visible UI below.
+      Why: the capture target needs to have real computed dimensions
+      and rendered content when html2canvas walks the layout tree.
+      Elements far outside the viewport (e.g. position:fixed; left:
+      -200vw) can have iOS Safari skip the content-paint pass as a
+      perf optimisation, leaving the snapshot blank. Keeping the
+      element IN the viewport (just visually hidden) forces the
+      paint pass to run. opacity:0 hides it from the user; the
+      html2canvas onclone callback overrides opacity back to 1 on
+      the cloned root before render. pointer-events:none keeps the
+      invisible overlay click-through so it can't intercept taps on
+      the visible UI below.
 
       The clone's opacity is overridden back to 1 by useSaveDocAsImage
       via toBlob's `style` option, so what gets saved IS visible.

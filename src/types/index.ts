@@ -131,6 +131,15 @@ export interface Order {
   paymentProof?: PaymentProof;
   paymentReceivedAt?: FsTs;
   paymentApprovedAt?: FsTs;
+  /**
+   * How the payment was confirmed:
+   *  - 'proof'    — admin approved a customer-uploaded payment screenshot.
+   *  - 'external' — admin marked the order paid for a payment received outside
+   *    the app (cash, external bank transfer). Set by the OrderDetailPage
+   *    "Mark as paid" action.
+   * Absent on orders paid before this field was introduced.
+   */
+  paidVia?: 'proof' | 'external';
 
   photos: string[];
   notes?: string;
@@ -193,7 +202,7 @@ export interface PublicOrder {
   orderNumber: string;
   trackingSlug: string;
   customerFirstName: string;
-  items: Array<Pick<OrderItem, 'description' | 'categoryName' | 'weightKg' | 'subtotal'>>;
+  items: Array<Pick<OrderItem, 'description' | 'categoryName' | 'weightKg' | 'ratePerKg' | 'subtotal'>>;
   totalWeightKg: number;
   totalAmount: number;
   status: OrderStatus;
@@ -204,4 +213,6 @@ export interface PublicOrder {
   paymentApprovedAt?: FsTs;
   business: BusinessInfo;
   paidAt?: FsTs;
+  /** Order creation date — used as the "Issued" date on the invoice/receipt. */
+  createdAt?: FsTs;
 }

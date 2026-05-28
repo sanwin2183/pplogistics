@@ -45,6 +45,8 @@ export function OrderDetailPage() {
 
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectNote, setRejectNote] = useState('');
+  const [markPaidOpen, setMarkPaidOpen] = useState(false);
+  const [markPaidNote, setMarkPaidNote] = useState('');
   const photoInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
 
@@ -98,8 +100,26 @@ export function OrderDetailPage() {
   async function approvePayment() {
     if (!order) return;
     try {
-      await advance.mutateAsync({ order, next: 'paid', note: 'Payment approved' });
+      await advance.mutateAsync({ order, next: 'paid', note: 'Payment approved', paidVia: 'proof' });
       toast.success('Payment approved');
+    } catch {
+      // mutation.onError already toasted.
+    }
+  }
+
+  async function markAsPaid() {
+    if (!order) return;
+    try {
+      const note = markPaidNote.trim();
+      await advance.mutateAsync({
+        order,
+        next: 'paid',
+        paidVia: 'external',
+        note: note ? `Marked paid (external): ${note}` : 'Marked paid (external)',
+      });
+      setMarkPaidOpen(false);
+      setMarkPaidNote('');
+      toast.success('Marked as paid');
     } catch {
       // mutation.onError already toasted.
     }
@@ -198,6 +218,22 @@ export function OrderDetailPage() {
           </Button>
         )}
 
+        {/* Mark as paid — available from ANY non-paid status as a shortcut for
+            payments received outside the app (cash, external bank transfer).
+            Distinct from the proof-approval flow below: it skips proof entirely
+            and jumps straight to 'paid', firing the same customer-rollup
+            transaction (totalSpent + outstandingBalance) via useUpdateOrderStatus. */}
+        {order.status !== 'paid' && (
+          <Button
+            variant="outline"
+            className="mt-2 w-full"
+            onClick={() => setMarkPaidOpen(true)}
+            disabled={advance.isPending}
+          >
+            Mark as paid (external)
+          </Button>
+        )}
+
         {/* Payment review section */}
         {order.status === 'awaiting_payment' && (
           <div className="mt-5 space-y-3 rounded-lg border border-dashed border-status-awaiting-fg/30 bg-status-awaiting/40 p-4">
@@ -225,8 +261,22 @@ export function OrderDetailPage() {
               </>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Customer hasn't uploaded a payment screenshot yet. Send them the tracking link.
+                Customer hasn't uploaded a payment screenshot yet. Send them the tracking link, or use "Mark as paid (external)" above for cash / external transfer.
               </p>
+            )}
+          </div>
+        )}
+
+        {/* Paid badge — shows how the payment was confirmed (for orders paid
+            after this field was introduced; older paid orders show no badge). */}
+        {order.status === 'paid' && order.paidVia && (
+          <div className="mt-5 rounded-lg border border-dashed border-status-paid-fg/30 bg-status-paid/40 p-4 text-center">
+            <div className="inline-flex items-center gap-2 text-sm font-medium text-status-paid-fg">
+              <Check className="h-4 w-4" />
+              {order.paidVia === 'external' ? 'Paid externally' : 'Paid via proof'}
+            </div>
+            {order.paymentApprovedAt && (
+              <p className="mt-1 text-xs text-muted-foreground">{fmtDateTime(order.paymentApprovedAt)}</p>
             )}
           </div>
         )}
@@ -358,6 +408,36 @@ export function OrderDetailPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setRejectOpen(false)}>Cancel</Button>
             <Button variant="destructive" onClick={rejectPayment} disabled={!rejectNote.trim()}>Reject</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Mark as paid dialog */}
+      <Dialog open={markPaidOpen} onOpenChange={setMarkPaidOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Mark order as paid</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Use this for payments received outside the app (cash, external bank transfer).
+              The customer's outstanding balance will be reduced by{' '}
+              <span className="font-medium tabular-nums text-foreground">{fmtMoney(order.totalAmount)}</span>.
+            </p>
+            <div className="space-y-1.5">
+              <Label htmlFor="markPaidNote">How was it paid? (optional)</Label>
+              <Textarea
+                id="markPaidNote"
+                rows={2}
+                value={markPaidNote}
+                onChange={(e) => setMarkPaidNote(e.target.value)}
+                placeholder="e.g. Cash received in person, SCB bank ref 12345"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMarkPaidOpen(false)}>Cancel</Button>
+            <Button onClick={markAsPaid} disabled={advance.isPending}>Mark as paid</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

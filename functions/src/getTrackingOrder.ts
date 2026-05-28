@@ -71,13 +71,16 @@ export const getTrackingOrder = onCall(
     const customerFirstName = customerName.split(' ')[0] || customerName;
 
     // --- Items: keep only customer-facing fields ---
-    // subtotal is the line price the customer is paying (revenue, not payout),
-    // safe to expose per §11; ratePerKg stays stripped to keep the internal
-    // rate-card out of public view (customer can still infer total/weight).
+    // subtotal is the line price the customer paid; ratePerKg is the rate
+    // charged on this order for this category — both are revenue-side and
+    // already implied by the totals, so exposing them is informational not
+    // §11-forbidden. Payouts (payoutRatePerKg / payoutAmount), totalPayout
+    // and profit remain stripped.
     const items = (order.items as Array<Record<string, unknown>> | undefined ?? []).map((it) => ({
       description: String(it.description ?? ''),
       categoryName: String(it.categoryName ?? ''),
       weightKg: Number(it.weightKg ?? 0),
+      ratePerKg: Number(it.ratePerKg ?? 0),
       subtotal: Number(it.subtotal ?? 0),
     }));
 
@@ -100,6 +103,8 @@ export const getTrackingOrder = onCall(
       paymentProof,
       paymentApprovedAt: order.paymentApprovedAt ?? null,
       paidAt: order.paymentApprovedAt ?? null,
+      // Order creation date — public, customers want to see when they placed it.
+      createdAt: order.createdAt ?? null,
       business: {
         name: String(settings.business?.name ?? 'PP Logistics'),
         tagline: settings.business?.tagline ?? undefined,

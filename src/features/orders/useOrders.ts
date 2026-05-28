@@ -133,7 +133,19 @@ export function useCreateOrder() {
 export function useUpdateOrderStatus() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ order, next, note }: { order: Order; next: OrderStatus; note?: string }) => {
+    mutationFn: async ({
+      order,
+      next,
+      note,
+      paidVia,
+    }: {
+      order: Order;
+      next: OrderStatus;
+      note?: string;
+      /** Set when transitioning to 'paid' — distinguishes proof-approval from a
+       *  manually-marked external payment. Omit for any other transition. */
+      paidVia?: 'proof' | 'external';
+    }) => {
       const ref = doc(db, 'orders', order.id);
       // Build the history entry so `note` is OMITTED when undefined — Firestore
       // SDK v11 rejects `note: undefined` inside arrayUnion() before any network
@@ -150,18 +162,26 @@ export function useUpdateOrderStatus() {
       const extras: Record<string, unknown> = {};
       if (next === 'paid') {
         extras.paymentApprovedAt = serverTimestamp();
-        // Reduce customer outstanding by totalAmount.
-        const cRef = doc(db, 'customers', order.customerId);
-        await runTransaction(db, async (tx) => {
-          const cSnap = await tx.get(cRef);
-          if (cSnap.exists()) {
-            const d = cSnap.data();
-            tx.update(cRef, {
-              totalSpent: (d.totalSpent ?? 0) + order.totalAmount,
-              outstandingBalance: Math.max(0, (d.outstandingBalance ?? 0) - order.totalAmount),
-            });
-          }
-        });
+        // Spread conditionally so undefined never reaches updateDoc.
+        if (paidVia) extras.paidVia = paidVia;
+        // Customer-rollup transaction — only run when transitioning to paid for
+        // the first time. The OrderDetailPage hides the "Approve payment" /
+        // "Mark as paid" actions once status==='paid', but this defensive gate
+        // prevents accidental double-counting of totalSpent / outstandingBalance
+        // if the mutation is ever invoked twice for an already-paid order.
+        if (order.status !== 'paid') {
+          const cRef = doc(db, 'customers', order.customerId);
+          await runTransaction(db, async (tx) => {
+            const cSnap = await tx.get(cRef);
+            if (cSnap.exists()) {
+              const d = cSnap.data();
+              tx.update(cRef, {
+                totalSpent: (d.totalSpent ?? 0) + order.totalAmount,
+                outstandingBalance: Math.max(0, (d.outstandingBalance ?? 0) - order.totalAmount),
+              });
+            }
+          });
+        }
       }
 
       await updateDoc(ref, {

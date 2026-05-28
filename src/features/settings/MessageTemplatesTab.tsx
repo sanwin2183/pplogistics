@@ -17,8 +17,15 @@ export function MessageTemplatesTab({ templates }: { templates: MessageTemplates
   } = useForm<MessageTemplates>({ defaultValues: templates });
 
   const onSubmit = handleSubmit(async (data) => {
-    await update.mutateAsync(data);
-    toast.success('Templates saved');
+    // Defensive — templates has no optional/undefined fields so this path
+    // SHOULD always succeed; the catch is a safety net so a future regression
+    // surfaces via useUpdateTemplates.onError instead of dying silently.
+    try {
+      await update.mutateAsync(data);
+      toast.success('Templates saved');
+    } catch {
+      // mutation.onError already toasted.
+    }
   });
 
   return (

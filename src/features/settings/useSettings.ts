@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { toast } from 'sonner';
 import { db } from '../../lib/firebase';
 import type { AppSettings, PaymentMethod, BusinessInfo, MessageTemplates } from '../../types';
 
@@ -42,6 +43,9 @@ export function useUpdatePaymentMethods() {
       await setDoc(doc(db, 'settings', 'app'), { payment: { methods } }, { merge: true });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to save payment methods');
+    },
   });
 }
 
@@ -52,6 +56,9 @@ export function useUpdateBusinessInfo() {
       await setDoc(doc(db, 'settings', 'app'), { business }, { merge: true });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to save business info');
+    },
   });
 }
 
@@ -62,5 +69,8 @@ export function useUpdateTemplates() {
       await setDoc(doc(db, 'settings', 'app'), { templates }, { merge: true });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to save templates');
+    },
   });
 }

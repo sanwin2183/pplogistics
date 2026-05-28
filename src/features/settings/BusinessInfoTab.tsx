@@ -10,6 +10,7 @@ import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { storage } from '../../lib/firebase';
+import { firstErrorMessage } from '../../lib/forms';
 import type { BusinessInfo } from '../../types';
 import { useUpdateBusinessInfo } from './useSettings';
 
@@ -52,10 +53,31 @@ export function BusinessInfoTab({ business }: { business: BusinessInfo }) {
     }
   };
 
-  const onSubmit = handleSubmit(async (data) => {
-    await update.mutateAsync(data);
-    toast.success('Business info saved');
-  });
+  const onSubmit = handleSubmit(
+    async (data) => {
+      // Build the payload by conditionally including optional keys only when
+      // non-empty — never pass `undefined` (Firebase SDK v11 rejects it
+      // recursively inside the nested business object, which was the silent-
+      // failure root cause). Same pattern as the Phase 2 flyer fix.
+      const payload: BusinessInfo = {
+        name: data.name,
+        ...(data.tagline ? { tagline: data.tagline } : {}),
+        ...(data.logoUrl ? { logoUrl: data.logoUrl } : {}),
+        ...(data.contactPhone ? { contactPhone: data.contactPhone } : {}),
+        ...(data.contactEmail ? { contactEmail: data.contactEmail } : {}),
+        ...(data.contactTelegram ? { contactTelegram: data.contactTelegram } : {}),
+      };
+      try {
+        await update.mutateAsync(payload);
+        toast.success('Business info saved');
+      } catch {
+        // useUpdateBusinessInfo.onError already toasted the failure.
+      }
+    },
+    (errs) => {
+      toast.error(firstErrorMessage(errs) ?? 'Please fix the highlighted fields');
+    },
+  );
 
   return (
     <form onSubmit={onSubmit} className="card-soft space-y-4 p-6">

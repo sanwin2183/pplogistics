@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
 import { EmptyState } from '../../components/EmptyState';
 import { storage } from '../../lib/firebase';
+import { firstErrorMessage } from '../../lib/forms';
 import type { PaymentMethod, PaymentMethodType } from '../../types';
 import { useUpdatePaymentMethods } from './useSettings';
 
@@ -48,20 +49,28 @@ export function PaymentMethodsTab({ methods }: { methods: PaymentMethod[] }) {
   const [creating, setCreating] = useState(false);
   const update = useUpdatePaymentMethods();
 
+  // save() throws on failure so the MethodDialog can keep itself open for
+  // retry. useUpdatePaymentMethods.onError surfaces the actual error toast;
+  // we just re-throw here so the caller can branch on success vs failure.
   const save = async (m: PaymentMethod) => {
-    const next = editing ? methods.map((x) => (x.id === m.id ? m : x)) : [...methods, m];
+    const wasEditing = !!editing;
+    const next = wasEditing ? methods.map((x) => (x.id === m.id ? m : x)) : [...methods, m];
     // If this one is default, un-default others of the same type.
     const cleaned = next.map((x) =>
       m.isDefault && x.id !== m.id && x.type === m.type ? { ...x, isDefault: false } : x,
     );
     await update.mutateAsync(cleaned);
-    toast.success(editing ? 'Payment method updated' : 'Payment method added');
+    toast.success(wasEditing ? 'Payment method updated' : 'Payment method added');
   };
 
   const remove = async (id: string) => {
     if (!confirm('Delete this payment method?')) return;
-    await update.mutateAsync(methods.filter((m) => m.id !== id));
-    toast.success('Deleted');
+    try {
+      await update.mutateAsync(methods.filter((m) => m.id !== id));
+      toast.success('Payment method deleted');
+    } catch {
+      // mutation.onError already toasted.
+    }
   };
 
   return (
@@ -187,22 +196,37 @@ function MethodDialog({
     }
   };
 
-  const onSubmit = handleSubmit(async (data) => {
-    const next: PaymentMethod = {
-      id: method?.id ?? nanoid(8),
-      type: data.type,
-      label: data.label,
-      accountName: data.accountName,
-      accountNumber: data.accountNumber,
-      bank: data.bank || undefined,
-      qrUrl: data.qrUrl || undefined,
-      isDefault: data.isDefault,
-      isActive: data.isActive,
-    };
-    await onSave(next);
-    reset();
-    onClose();
-  });
+  const onSubmit = handleSubmit(
+    async (data) => {
+      // Conditionally INCLUDE optional keys only when non-empty so we never
+      // put `bank: undefined` / `qrUrl: undefined` into the nested
+      // payment.methods[] array — Firebase SDK v11 rejects undefined inside
+      // nested objects, which was silently failing every Save here. With a
+      // hidden bank field for PromptPay/KBZ/Wave, this hit on every type.
+      const next: PaymentMethod = {
+        id: method?.id ?? nanoid(8),
+        type: data.type,
+        label: data.label,
+        accountName: data.accountName,
+        accountNumber: data.accountNumber,
+        isDefault: data.isDefault,
+        isActive: data.isActive,
+        ...(data.bank ? { bank: data.bank } : {}),
+        ...(data.qrUrl ? { qrUrl: data.qrUrl } : {}),
+      };
+      try {
+        await onSave(next);
+        reset();
+        onClose();
+      } catch {
+        // mutation.onError already toasted; keep the dialog open so the
+        // owner can edit/retry instead of losing context.
+      }
+    },
+    (errs) => {
+      toast.error(firstErrorMessage(errs) ?? 'Please fix the highlighted fields');
+    },
+  );
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && (reset(), onClose())}>

@@ -1,6 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  addDoc,
   collection,
   doc,
   runTransaction,
@@ -80,29 +79,79 @@ export function useCreateOrder() {
       const now = Timestamp.now();
       const firstHistory: StatusHistoryEntry = { status: 'pending', timestamp: now, note: 'Order created' };
 
-      const ref = await addDoc(collection(db, 'orders'), {
-        ...input,
-        orderNumber,
-        trackingSlug,
-        status: 'pending' as OrderStatus,
-        statusHistory: [firstHistory],
-        photos: [],
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      // Pre-generate a doc ref so the order create itself runs INSIDE the
+      // transaction (tx.set), not as a separate addDoc before it. This makes
+      // order + rollups truly atomic: a transaction failure can't leave an
+      // orphan order with stale customer/flyer rollups.
+      const orderRef = doc(collection(db, 'orders'));
 
-      // Update flyer.kgUsed for each assignment + customer rollups in a transaction.
+      // Firestore transactions REQUIRE all reads before any writes (the
+      // "Firestore transactions require all reads to be executed before all
+      // writes" error was firing on every order create here). The previous
+      // shape read flyer → wrote flyer → looped → then read the customer
+      // AFTER the flyer write, breaking the rule.
+      //
+      // New shape — three explicit phases:
+      //
+      //   Phase 1 — READS:
+      //     - the customer doc once,
+      //     - each UNIQUE flyer id from flyerAssignments[] once
+      //       (Firestore rejects two tx.get() calls on the same ref within a
+      //       single transaction, so we deduplicate even if the same flyer
+      //       appears in multiple assignment rows — partial assignment per
+      //       §19 is allowed but the SDK still wouldn't accept duplicate
+      //       reads).
+      //     All reads kicked off in parallel via Promise.all so the
+      //     transaction's read latency is one round-trip total, not N.
+      //
+      //   Phase 2 — COMPUTE:
+      //     Plain-JS reduction of the snapshots:
+      //       * customer.totalOrders + 1
+      //       * customer.outstandingBalance + totalAmount (math unchanged
+      //         — keeps the §5/§11 invariant that the later 'paid'
+      //         transition decrements outstandingBalance by the same
+      //         totalAmount, see useUpdateOrderStatus 'paid' branch).
+      //       * For each flyer: previous kgUsed + sum of all weightKg
+      //         assigned to that flyer in this order (handles the
+      //         same-flyer-in-multiple-rows case).
+      //
+      //   Phase 3 — WRITES (all after every read has resolved):
+      //     1. tx.set(orderRef, …)  — create the order doc
+      //     2. tx.update(customerRef, …)  — bump rollups
+      //     3. tx.update(flyerRef, …)  for each unique flyer
       await runTransaction(db, async (tx) => {
-        for (const a of input.flyerAssignments) {
-          const fRef = doc(db, 'flyers', a.flyerId);
-          const fSnap = await tx.get(fRef);
-          if (fSnap.exists()) {
-            const prev = (fSnap.data().kgUsed as number | undefined) ?? 0;
-            tx.update(fRef, { kgUsed: prev + a.weightKg, updatedAt: serverTimestamp() });
-          }
-        }
+        // ---- Phase 1: reads ----
         const cRef = doc(db, 'customers', input.customerId);
-        const cSnap = await tx.get(cRef);
+        const flyerIds = Array.from(new Set(input.flyerAssignments.map((a) => a.flyerId)));
+        const flyerRefs = new Map(flyerIds.map((id) => [id, doc(db, 'flyers', id)] as const));
+
+        const [cSnap, ...flyerSnaps] = await Promise.all([
+          tx.get(cRef),
+          ...flyerIds.map((id) => tx.get(flyerRefs.get(id)!)),
+        ]);
+
+        // ---- Phase 2: compute ----
+        // Sum the kg assigned to each flyer in this order (collapses the
+        // multi-row-same-flyer case into one delta per flyer).
+        const kgByFlyer = new Map<string, number>();
+        for (const a of input.flyerAssignments) {
+          kgByFlyer.set(a.flyerId, (kgByFlyer.get(a.flyerId) ?? 0) + a.weightKg);
+        }
+
+        // ---- Phase 3: writes ----
+        // 3a. Create the order doc inside the transaction.
+        tx.set(orderRef, {
+          ...input,
+          orderNumber,
+          trackingSlug,
+          status: 'pending' as OrderStatus,
+          statusHistory: [firstHistory],
+          photos: [],
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
+        // 3b. Customer rollups.
         if (cSnap.exists()) {
           const d = cSnap.data();
           tx.update(cRef, {
@@ -110,22 +159,42 @@ export function useCreateOrder() {
             outstandingBalance: (d.outstandingBalance ?? 0) + input.totalAmount,
           });
         }
+
+        // 3c. Flyer kgUsed rollup — one update per unique flyer.
+        for (let i = 0; i < flyerIds.length; i++) {
+          const fSnap = flyerSnaps[i];
+          if (!fSnap.exists()) continue;
+          const id = flyerIds[i];
+          const prev = (fSnap.data().kgUsed as number | undefined) ?? 0;
+          const delta = kgByFlyer.get(id) ?? 0;
+          tx.update(flyerRefs.get(id)!, {
+            kgUsed: prev + delta,
+            updatedAt: serverTimestamp(),
+          });
+        }
       });
 
       logActivity({
         type: 'order_created',
-        orderId: ref.id,
+        orderId: orderRef.id,
         orderNumber,
         customerName: input.customerName,
         message: `Order #${orderNumber} created for ${input.customerName}`,
       });
 
-      return { id: ref.id, trackingSlug };
+      return { id: orderRef.id, trackingSlug };
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: KEY });
       qc.invalidateQueries({ queryKey: ['flyers'] });
       qc.invalidateQueries({ queryKey: ['customers'] });
+    },
+    // Surface any transaction failure as a toast so a tap never looks silent
+    // — matches the defensive pattern used by useUpdateOrderStatus + the
+    // mark-as-paid / reject-payment mutations. Callers may additionally
+    // try/catch around mutateAsync for context-specific UX.
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to create order');
     },
   });
 }

@@ -93,7 +93,12 @@ async function reencodeImagesViaCanvas(
       const tag = `img#${idx}`;
       const before = (img.src ?? '').slice(0, 30);
       const alt = img.alt || '(no alt)';
-      dlog(tag, alt, 'src prefix:', before);
+      // QR images carry "QR code" in alt — detect them so we can pad
+      // the canvas to a true square before re-encoding, defending
+      // against html2canvas's imperfect object-fit handling that was
+      // squeezing the cells of non-square QR sources.
+      const isQr = /qr code/i.test(alt);
+      dlog(tag, alt, 'src prefix:', before, isQr ? '(QR — will pad to square)' : '');
 
       try {
         // 1. Wait for the source <img> to decode fully.
@@ -112,21 +117,35 @@ async function reencodeImagesViaCanvas(
           return;
         }
 
-        // 2. Draw onto an offscreen canvas at natural pixel dimensions.
+        // 2. Compute output dimensions. For QR images we ALWAYS write
+        //    a square canvas (max of w,h on both axes) so the source
+        //    delivered to html2canvas has a square aspect ratio — then
+        //    whatever object-fit / box-sizing html2canvas chooses to
+        //    apply, the QR cells stay square.
+        const outW = isQr ? Math.max(w, h) : w;
+        const outH = isQr ? Math.max(w, h) : h;
+        const drawX = isQr ? Math.floor((outW - w) / 2) : 0;
+        const drawY = isQr ? Math.floor((outH - h) / 2) : 0;
+
         const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
+        canvas.width = outW;
+        canvas.height = outH;
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           dwarn(tag, alt, 'could not get 2d context — skipping re-encode');
           return;
         }
-        ctx.drawImage(img, 0, 0, w, h);
+        // Paint the padding-area white for QR images so the canvas isn't
+        // transparent on edges that don't get covered by drawImage.
+        if (isQr) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, outW, outH);
+        }
+        ctx.drawImage(img, drawX, drawY, w, h);
 
         // 3. Re-encode as a vanilla browser-emitted PNG.
         //    toDataURL throws a SecurityError if the canvas was tainted
-        //    by a cross-origin draw — that's what we want to see in
-        //    the logs if it's happening.
+        //    by a cross-origin draw — that'd show up in the logs.
         let dataUrl: string;
         try {
           dataUrl = canvas.toDataURL('image/png');
@@ -138,7 +157,7 @@ async function reencodeImagesViaCanvas(
           dwarn(tag, alt, 'toDataURL returned empty');
           return;
         }
-        dlog(tag, alt, 'new src prefix:', dataUrl.slice(0, 30), 'len:', dataUrl.length);
+        dlog(tag, alt, 'new src prefix:', dataUrl.slice(0, 30), 'len:', dataUrl.length, 'outDims:', outW, 'x', outH);
 
         // 4. Swap src and await decode of the canvas-derived PNG.
         img.src = dataUrl;
@@ -148,7 +167,7 @@ async function reencodeImagesViaCanvas(
             setTimeout(() => rej(new Error('redecode timeout')), perImageTimeoutMs),
           ),
         ]);
-        dlog(tag, alt, 'final:', 'w=', img.naturalWidth, 'h=', img.naturalHeight);
+        dlog(tag, alt, 'final:', 'w=', img.naturalWidth, 'h=', img.naturalHeight, isQr && img.naturalWidth === img.naturalHeight ? '(square OK)' : '');
       } catch (e) {
         derr(tag, alt, 'failure during re-encode:', e);
         /* graceful — keep original src */
@@ -179,6 +198,21 @@ export function useSaveDocAsImage(filenameBase: string) {
         // 2. html2canvas — direct DOM-walk into a real <canvas>. NO
         //    foreignObject. The QR's drawImage path is the same as
         //    the on-screen card uses, which is known to work.
+        //
+        //    A4 portrait at 96 DPI is 794 × 1123 px. We always pass at
+        //    LEAST that to windowWidth/Height so html2canvas's iframe
+        //    viewport doesn't shrink to the live phone viewport (~414
+        //    px) and re-flow the doc through narrow-column layout.
+        //    We also measure the live node's bounding rect (opacity:0
+        //    elements still have layout) so a doc taller than A4 (many
+        //    items / methods) gets enough vertical room.
+        const A4_W = 794;
+        const A4_H = 1123;
+        const rect = node.getBoundingClientRect();
+        const windowWidth = Math.max(Math.ceil(rect.width), A4_W);
+        const windowHeight = Math.max(Math.ceil(rect.height), A4_H);
+        dlog('html2canvas window:', windowWidth, 'x', windowHeight, '(node rect:', Math.ceil(rect.width), 'x', Math.ceil(rect.height), ')');
+
         const renderCanvas = await html2canvas(node, {
           scale: 2,
           backgroundColor: '#ffffff',
@@ -190,6 +224,13 @@ export function useSaveDocAsImage(filenameBase: string) {
           // useful if a remote <img> ever sneaks into the doc.
           useCORS: true,
           allowTaint: false,
+          // Tell html2canvas's hidden iframe the viewport size to
+          // simulate. Without this it defaults to the live window's
+          // clientWidth which on phones is narrower than the A4 doc;
+          // the doc would lay out compressed and text height would
+          // miscount, producing clipped descenders.
+          windowWidth,
+          windowHeight,
           // Skip the on-screen Save/Print toolbar — equivalent to the
           // old html-to-image `filter` option. The .doc-page-a4 itself
           // contains no toolbar (toolbar lives in the on-screen card,
@@ -198,10 +239,11 @@ export function useSaveDocAsImage(filenameBase: string) {
           ignoreElements: (el: Element) =>
             el instanceof HTMLElement && el.dataset.captureSkip === 'true',
           // Mutate the cloned root before render so the renderer sees
-          // a visible doc (the live source is opacity:0 / position:
-          // fixed off-screen). Mutations here affect only the clone
-          // in html2canvas's hidden iframe, NOT the live DOM, so the
-          // user never sees the A4 doc flash on screen.
+          // a visible doc at its real A4 dimensions (the live source
+          // is opacity:0 / position:fixed off-screen). Mutations here
+          // affect only the clone in html2canvas's hidden iframe, NOT
+          // the live DOM, so the user never sees the A4 doc flash on
+          // screen.
           onclone: (_clonedDoc: Document, clonedNode: HTMLElement) => {
             try {
               clonedNode.style.opacity = '1';
@@ -212,7 +254,16 @@ export function useSaveDocAsImage(filenameBase: string) {
               clonedNode.style.bottom = 'auto';
               clonedNode.style.transform = 'none';
               clonedNode.style.pointerEvents = 'auto';
-              dlog('onclone: cloned root style overridden');
+              // Pin the clone to A4 portrait dimensions so html2canvas
+              // can't decide the box is narrower than intended and
+              // collapse the layout. Width MUST match the source's
+              // `width: 210mm` (= 794 px at 96 DPI) so the inner grid
+              // / flex containers expand the way they do at full
+              // width — the same way the print path sees them.
+              clonedNode.style.width = '210mm';
+              clonedNode.style.minHeight = '297mm';
+              clonedNode.style.maxWidth = 'none';
+              dlog('onclone: cloned root style overridden (width 210mm)');
             } catch (e) {
               derr('onclone failure:', e);
             }

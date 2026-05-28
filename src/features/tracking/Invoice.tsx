@@ -215,15 +215,28 @@ function PaymentMethodsForDoc({ order }: { order: PublicOrder }) {
           return (
             <div key={m.id} className="flex items-start gap-4 rounded-md border border-border bg-card p-3">
               {qrSrc ? (
-                // White-backed box so dark QR pixels print cleanly. Fixed
-                // dimensions so the captured JPG always gets a scannable
-                // resolution.
+                // White-backed 128x128 box. Inner wrapper enforces an
+                // explicit pixel square so html2canvas can't introduce
+                // aspect-ratio distortion via its imperfect object-fit
+                // handling — the <img> itself carries explicit width AND
+                // height HTML attributes plus inline pixel-sized style,
+                // and the re-encode pass pads any non-square QR source
+                // to a true square before we get here. Belt-and-braces.
                 <div className="shrink-0 rounded-md border border-border bg-white p-1.5">
-                  <img
-                    src={qrSrc}
-                    alt={`${m.label} QR code`}
-                    className="h-32 w-32 object-contain"
-                  />
+                  <div style={{ width: '128px', height: '128px' }}>
+                    <img
+                      src={qrSrc}
+                      alt={`${m.label} QR code`}
+                      width={128}
+                      height={128}
+                      style={{
+                        width: '128px',
+                        height: '128px',
+                        objectFit: 'contain',
+                        display: 'block',
+                      }}
+                    />
+                  </div>
                 </div>
               ) : m.qrUrl ? (
                 // qrUrl was set but the server-side fetch failed → graceful

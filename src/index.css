@@ -289,6 +289,20 @@
     --status-paid-fg:         165 70% 25%;
   }
 
+  /*
+    html2canvas under-measures tight unitless line-heights — Tailwind's
+    default class-paired line-heights (text-2xl is leading-8 = 32/24 ≈
+    1.33, text-sm is leading-5 = 20/14 ≈ 1.43, text-[10px] inherits
+    1.55 from .doc-page-a4) round down in html2canvas's text measurer
+    and clip descenders. We force a generous line-height on EVERY
+    descendant of .doc-page-a4 so the capture preserves the lower
+    halves of glyphs ("g", "y", "p", as well as the bottoms of
+    accented characters). The on-screen .card-soft Invoice/Receipt
+    uses different markup (.print-screen-hidden ≠ .doc-page-a4) so
+    this rule scopes only to the capture subtree.
+  */
+  .doc-page-a4 * { line-height: 1.5 !important; }
+
   /* Marker on the on-screen .card-soft Invoice/Receipt so @media print
      hides it — the .doc-page-a4 sibling is the print target. */
   .print-screen-hidden { /* no-op on screen; @media print rule hides it */ }

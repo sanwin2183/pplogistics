@@ -24,8 +24,7 @@ export function Receipt({ order }: { order: PublicOrder }) {
   const { save, saving } = useSaveDocAsImage(`receipt-${order.orderNumber}`);
 
   return (
-    <section className="space-y-3">
-      <div ref={docRef} className="card-soft print-doc relative overflow-hidden p-6 space-y-5">
+    <div ref={docRef} className="card-soft print-doc relative overflow-hidden p-6 space-y-5">
         {/* Corner PAID stamp */}
         <div className="pointer-events-none absolute right-4 top-4 rotate-12">
           <div className="rounded-md border-2 border-status-paid-fg/60 px-3 py-1 text-xs font-bold uppercase tracking-widest text-status-paid-fg/60">
@@ -124,17 +123,23 @@ export function Receipt({ order }: { order: PublicOrder }) {
           </p>
         )}
         <p className="text-center text-xs text-muted-foreground">Thank you for your business 🙏</p>
-      </div>
 
-      <div className="grid grid-cols-2 gap-2 no-print">
-        <Button variant="outline" onClick={() => save(docRef.current)} disabled={saving}>
-          {saving ? <Spinner className="text-primary" /> : <ImageIcon />}
-          {saving ? 'Saving…' : 'Save as image'}
-        </Button>
-        <Button variant="outline" onClick={() => window.print()}>
-          <Printer /> Print / PDF
-        </Button>
+        {/* Save / print controls — INSIDE the card for visual anchoring
+            (matches Invoice). data-capture-skip is dropped by
+            useSaveDocAsImage's filter so these buttons never appear in
+            the saved image; .no-print hides them in print output. */}
+        <div
+          data-capture-skip="true"
+          className="no-print grid grid-cols-2 gap-2 border-t border-border pt-4"
+        >
+          <Button variant="outline" onClick={() => save(docRef.current)} disabled={saving}>
+            {saving ? <Spinner className="text-primary" /> : <ImageIcon />}
+            {saving ? 'Saving…' : 'Save as image'}
+          </Button>
+          <Button variant="outline" onClick={() => window.print()}>
+            <Printer /> Print / PDF
+          </Button>
+        </div>
       </div>
-    </section>
   );
 }

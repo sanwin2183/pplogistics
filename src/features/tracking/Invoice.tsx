@@ -31,8 +31,7 @@ export function Invoice({ order }: { order: PublicOrder }) {
   const { save, saving } = useSaveDocAsImage(`invoice-${order.orderNumber}`);
 
   return (
-    <div className="space-y-3">
-      <section ref={docRef} className="card-soft print-doc p-6 space-y-5">
+    <section ref={docRef} className="card-soft print-doc p-6 space-y-5">
       {/* Header — title + logo */}
       <header className="flex items-start justify-between gap-3 border-b border-border pb-4">
         <div>
@@ -118,11 +117,16 @@ export function Invoice({ order }: { order: PublicOrder }) {
           <span className="text-2xl font-semibold tabular-nums">{fmtMoney(order.totalAmount)}</span>
         </div>
       </div>
-      </section>
 
-      {/* Save / print controls — excluded from both print output and the
-          saved image (no-print + outside the docRef capture root). */}
-      <div className="grid grid-cols-2 gap-2 no-print">
+      {/* Save / print controls — INSIDE the card so they're visually anchored
+          to the invoice (not floating between two big cards above and below).
+          data-capture-skip means useSaveDocAsImage's filter drops this node
+          from the cloned subtree before rendering — buttons never appear in
+          the saved image. .no-print keeps them out of the print output. */}
+      <div
+        data-capture-skip="true"
+        className="no-print grid grid-cols-2 gap-2 border-t border-border pt-4"
+      >
         <Button variant="outline" onClick={() => save(docRef.current)} disabled={saving}>
           {saving ? <Spinner className="text-primary" /> : <ImageIcon />}
           {saving ? 'Saving…' : 'Save as image'}
@@ -131,6 +135,6 @@ export function Invoice({ order }: { order: PublicOrder }) {
           <Printer /> Print / PDF
         </Button>
       </div>
-    </div>
+    </section>
   );
 }

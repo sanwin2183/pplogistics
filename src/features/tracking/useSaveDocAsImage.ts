@@ -64,6 +64,14 @@ export function useSaveDocAsImage(filenameBase: string) {
           // "screenshot" and is heavier.
           type: 'image/jpeg',
           quality: 0.95,
+          // Universal opt-out — any DOM node marked data-capture-skip is
+          // excluded from the cloned subtree before serialization. Lets us
+          // put on-screen action UI (Save / Print buttons) physically
+          // INSIDE the print-doc card so they're visually anchored to the
+          // invoice/receipt, without those buttons showing up in the saved
+          // image. Returning false from filter skips the node + descendants.
+          filter: (node) =>
+            !(node instanceof HTMLElement && node.dataset.captureSkip === 'true'),
         });
         if (!blob) throw new Error('Failed to render image');
 

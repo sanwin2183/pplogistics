@@ -1,10 +1,32 @@
-import { useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import { Printer, CheckCircle2, Image as ImageIcon } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { Spinner } from '../../components/Spinner';
 import { fmtDate, fmtDateTime, fmtKg, fmtMoney } from '../../lib/formatters';
 import { useSaveDocAsImage } from './useSaveDocAsImage';
+import {
+  useImageDataUris,
+  allImagesSettled,
+  type ImageDataUriResult,
+} from './useImageDataUris';
 import type { PublicOrder } from '../../types';
+
+/**
+ * Resolve a remote image URL to the src to render. See Invoice.tsx for the
+ * fuller version of this helper — same contract: data URI when ready,
+ * { errored: true } on fetch failure, { src: null } while loading.
+ */
+function resolveImg(
+  url: string | null | undefined,
+  dataUriMap: Record<string, ImageDataUriResult> | undefined,
+): { src: string | null; errored: boolean } {
+  if (!url) return { src: null, errored: false };
+  if (!dataUriMap) return { src: url, errored: false };
+  const r = dataUriMap[url];
+  if (r?.status === 'ready' && r.dataUri) return { src: r.dataUri, errored: false };
+  if (r?.status === 'error') return { src: null, errored: true };
+  return { src: null, errored: false };
+}
 
 /**
  * Receipt for paid orders (status === 'paid').
@@ -30,32 +52,48 @@ export function Receipt({ order }: { order: PublicOrder }) {
   const docRef = useRef<HTMLDivElement | null>(null);
   const { save, saving } = useSaveDocAsImage(`receipt-${order.orderNumber}`);
 
+  // Receipt only has one remote image — the business logo. (No QR /
+  // payment block on receipts.) Pre-fetched as a data: URI so the
+  // capture + print paths don't depend on a cross-origin fetch.
+  const imageUrls = useMemo(
+    () => (order.business.logoUrl ? [order.business.logoUrl] : []),
+    [order.business.logoUrl],
+  );
+  const dataUriMap = useImageDataUris(imageUrls);
+  const ready = allImagesSettled(dataUriMap, imageUrls);
+
   return (
     <>
       {/* 1. ON-SCREEN card — interactive copy. */}
       <section className="card-soft print-screen-hidden relative overflow-hidden p-6 space-y-5">
         <ReceiptBody order={order} />
 
-        {/* Save / print toolbar — captured-skip + no-print. */}
+        {/* Save / print toolbar — captured-skip + no-print. Disabled until
+            the logo has been inlined as a data URI (capture/print would
+            otherwise show a broken-image placeholder). */}
         <div
           data-capture-skip="true"
           className="no-print grid grid-cols-2 gap-2 border-t border-border pt-4"
         >
-          <Button variant="outline" onClick={() => save(docRef.current)} disabled={saving}>
-            {saving ? <Spinner className="text-primary" /> : <ImageIcon />}
-            {saving ? 'Saving…' : 'Save as image'}
+          <Button
+            variant="outline"
+            onClick={() => save(docRef.current)}
+            disabled={saving || !ready}
+          >
+            {(saving || !ready) ? <Spinner className="text-primary" /> : <ImageIcon />}
+            {saving ? 'Saving…' : !ready ? 'Preparing…' : 'Save as image'}
           </Button>
-          <Button variant="outline" onClick={() => window.print()}>
-            <Printer /> Print / PDF
+          <Button variant="outline" onClick={() => window.print()} disabled={!ready}>
+            <Printer /> {!ready ? 'Preparing…' : 'Print / PDF'}
           </Button>
         </div>
       </section>
 
-      {/* 2. OFF-SCREEN A4 doc — capture + print target.
-          relative so the absolute PAID stamp inside ReceiptBody anchors
-          to this container, not to the viewport. */}
+      {/* 2. OFF-SCREEN A4 doc — capture + print target. Uses the data-URI
+          logo via dataUriMap. relative so the absolute PAID stamp inside
+          ReceiptBody anchors to this container, not the viewport. */}
       <div ref={docRef} className="doc-page-a4 relative space-y-6" aria-hidden="true">
-        <ReceiptBody order={order} />
+        <ReceiptBody order={order} dataUriMap={dataUriMap} />
       </div>
     </>
   );
@@ -65,8 +103,20 @@ export function Receipt({ order }: { order: PublicOrder }) {
  * Shared receipt body. The PAID corner stamp uses position:absolute, so
  * whichever wrapper renders this MUST be position-relative (the on-screen
  * card uses `relative overflow-hidden`; the A4 doc uses `relative`).
+ *
+ * - On-screen call: omit dataUriMap → logo renders against its original
+ *   Firebase Storage URL.
+ * - A4-doc call: pass dataUriMap → logo renders from inlined data: URI
+ *   so capture + print don't depend on a cross-origin fetch.
  */
-function ReceiptBody({ order }: { order: PublicOrder }) {
+function ReceiptBody({
+  order,
+  dataUriMap,
+}: {
+  order: PublicOrder;
+  dataUriMap?: Record<string, ImageDataUriResult>;
+}) {
+  const logo = resolveImg(order.business.logoUrl, dataUriMap);
   // Heuristic for the "Paid via" line — paidVia isn't in PublicOrder yet
   // (would require a function deploy), but the public response DOES
   // include the sanitized paymentProof object whenever the customer
@@ -94,11 +144,10 @@ function ReceiptBody({ order }: { order: PublicOrder }) {
           <h1 className="text-2xl font-semibold tracking-tight">Receipt</h1>
           <p className="mt-0.5 text-xs text-muted-foreground tabular-nums">#{order.orderNumber}</p>
         </div>
-        {order.business.logoUrl ? (
+        {logo.src ? (
           <img
-            src={order.business.logoUrl}
+            src={logo.src}
             alt={order.business.name}
-            crossOrigin="anonymous"
             className="h-10 max-w-[7rem] object-contain"
           />
         ) : (

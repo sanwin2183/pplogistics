@@ -24,12 +24,15 @@ import { toast } from 'sonner';
  *     long-press-save as a last resort.
  *
  * Cross-origin images (Firebase Storage logo + payment QR):
- *   getDownloadURL() returns a firebasestorage.googleapis.com URL that
- *   serves with `Access-Control-Allow-Origin: *` for media bytes, so
- *   html-to-image's internal fetch->dataURI step works without any CORS
- *   config on our side. We pass `cacheBust: true` so URLs don't share an
- *   <img> already-decoded-via-credentialed-fetch cache entry that would
- *   taint the SVG snapshot.
+ *   These are pre-converted to base64 data: URIs by useImageDataUris in
+ *   the parent component (Invoice / Receipt), and the A4 capture target
+ *   renders <img> from those data URIs. Result: the cloned subtree
+ *   html-to-image serialises contains NO remote image references — every
+ *   pixel is already inline. There is no cross-origin fetch at capture
+ *   time, so the canvas can't taint and the toBlob can't fail on a
+ *   cross-origin image. (We previously relied on crossOrigin="anonymous"
+ *   + cacheBust:true to avoid the taint, but iOS Safari did not honour
+ *   that reliably — toBlob threw "SecurityError" on tainted canvas.)
  *
  * Theme during capture:
  *   The capture target is always the off-screen `.doc-page-a4` element
@@ -52,7 +55,6 @@ export function useSaveDocAsImage(filenameBase: string) {
         const blob = await toBlob(node, {
           pixelRatio: 2,
           backgroundColor: '#ffffff',
-          cacheBust: true,
           // JPEG via the type hint; quality applies on encoders that honour it.
           // We deliberately keep type=image/jpeg because Photos on iOS treats
           // JPG as a first-class camera-roll citizen; PNG often imports as
@@ -65,6 +67,9 @@ export function useSaveDocAsImage(filenameBase: string) {
           // INSIDE the print-doc card so they're visually anchored to the
           // invoice/receipt, without those buttons showing up in the saved
           // image. Returning false from filter skips the node + descendants.
+          // (cacheBust:true was previously set to dodge cross-origin <img>
+          // cache taint; with images pre-inlined as data: URIs the option
+          // is now a no-op and was removed.)
           filter: (node) =>
             !(node instanceof HTMLElement && node.dataset.captureSkip === 'true'),
         });

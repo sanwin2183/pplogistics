@@ -20,7 +20,22 @@ const DB_ID = 'default';
 //   2. firebase deploy --only functions --project pp-logistics
 //      (the deploy binds the secret to the function instance)
 const TELEGRAM_BOT_TOKEN = defineSecret('TELEGRAM_BOT_TOKEN');
-const TELEGRAM_CHAT_ID = 6928694676;
+
+/**
+ * Chat IDs to ping when a customer submits a payment proof.
+ *
+ * NOT sensitive — chat IDs alone can't send anything. Only the bot
+ * token in Secret Manager can. They live in source so they're easy
+ * to audit / add to.
+ *
+ * Positive numbers are individual users (owner's personal chat);
+ * negative numbers are groups / channels. Group IDs are negative
+ * by Telegram's convention.
+ */
+const TELEGRAM_CHAT_IDS: readonly number[] = [
+  6928694676,    // owner's personal chat
+  -5250847582,   // "PP Logistics Notification" group
+];
 
 // Base URL for the deep-link in the Telegram alert. Points at the
 // canonical Firebase Hosting URL (stable regardless of custom-domain
@@ -61,14 +76,14 @@ async function notifyTelegram(
       if (!res.ok) {
         const errBody = await res.text().catch(() => '<no body>');
         // eslint-disable-next-line no-console
-        console.warn(`[telegram] sendMessage HTTP ${res.status}: ${errBody}`);
+        console.warn(`[telegram] sendMessage to ${chatId}: HTTP ${res.status}: ${errBody}`);
       }
     } finally {
       clearTimeout(timer);
     }
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.warn('[telegram] notify failed', err);
+    console.warn(`[telegram] notify to ${chatId} failed`, err);
   }
 }
 
@@ -164,13 +179,21 @@ export const submitPaymentProof = onCall(
       timestamp: now,
     });
 
-    // ─── Telegram alert ─────────────────────────────────────────────
-    // Best-effort. Wrapped in an OUTER try/catch so even synchronous
-    // failures (e.g. TELEGRAM_BOT_TOKEN.value() returning empty,
-    // string-builder throwing on weird order data) can't propagate.
-    // notifyTelegram itself already never throws — this is belt-and-
-    // braces. The proof is already saved; this notification is purely
-    // informational for the owner.
+    // ─── Telegram alert (fan-out) ──────────────────────────────────
+    // Best-effort. Layered failure isolation so a Telegram problem
+    // can NEVER fail the proof submission:
+    //   - OUTER try/catch: covers synchronous failures (message-
+    //     builder throwing, TELEGRAM_BOT_TOKEN.value() throwing).
+    //   - PER-CHAT try/catch (inside the Promise.allSettled): a
+    //     failure to ONE chat (bot removed from the group, chat
+    //     deleted, that chat's rate limit hit, etc.) is logged with
+    //     its chat_id and can't block the other chats.
+    //   - notifyTelegram ITSELF: already swallows network/HTTP/
+    //     timeout failures internally. Triple-redundant.
+    // Promise.allSettled means we wait for every chat send to settle
+    // (success or swallowed failure) before returning to the
+    // customer, but a single chat hanging on the 5s timeout can't
+    // delay another chat's send because they run in parallel.
     try {
       const orderNumber = String(order.orderNumber ?? '');
       const customerName = String(order.customerName ?? '').trim();
@@ -188,7 +211,24 @@ export const submitPaymentProof = onCall(
         `Amount: ฿${amountThb}\n` +
         `Status: ${escapeHtml(statusLabel)}\n\n` +
         `<a href="${adminUrl}">Review &amp; approve →</a>`;
-      await notifyTelegram(TELEGRAM_BOT_TOKEN.value(), TELEGRAM_CHAT_ID, message);
+      // Read the secret ONCE outside the per-chat loop — value() returns
+      // synchronously from process.env; reading per-chat would be the
+      // same string each time anyway.
+      const token = TELEGRAM_BOT_TOKEN.value();
+      await Promise.allSettled(
+        TELEGRAM_CHAT_IDS.map(async (chatId) => {
+          try {
+            await notifyTelegram(token, chatId, message);
+          } catch (err) {
+            // notifyTelegram never throws, so this catch is purely
+            // defensive against future changes that might let
+            // something escape. The chat_id tag makes the log
+            // entry self-explanatory.
+            // eslint-disable-next-line no-console
+            console.warn(`[telegram] per-chat send to ${chatId} failed`, err);
+          }
+        }),
+      );
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[telegram] alert path failed', err);

@@ -24,15 +24,17 @@ import { toast } from 'sonner';
  *     long-press-save as a last resort.
  *
  * Cross-origin images (Firebase Storage logo + payment QR):
- *   These are pre-converted to base64 data: URIs by useImageDataUris in
- *   the parent component (Invoice / Receipt), and the A4 capture target
- *   renders <img> from those data URIs. Result: the cloned subtree
- *   html-to-image serialises contains NO remote image references — every
- *   pixel is already inline. There is no cross-origin fetch at capture
- *   time, so the canvas can't taint and the toBlob can't fail on a
- *   cross-origin image. (We previously relied on crossOrigin="anonymous"
- *   + cacheBust:true to avoid the taint, but iOS Safari did not honour
- *   that reliably — toBlob threw "SecurityError" on tainted canvas.)
+ *   The bytes are pre-fetched server-side by the getTrackingOrder
+ *   Cloud Function (which has no browser CORS restrictions) and returned
+ *   in the response as base64 data: URIs on business.logoDataUri and
+ *   paymentMethods[].qrDataUri. The A4 capture target renders <img>
+ *   from those data URIs, so the cloned subtree html-to-image serialises
+ *   contains NO remote image references — every pixel is already inline.
+ *   The canvas can't taint and toBlob can't fail on a cross-origin
+ *   image. (We previously tried crossOrigin="anonymous" + cacheBust,
+ *   then a client-side fetch->dataURI hook; both failed because Firebase
+ *   Storage's default CORS config doesn't include ACAO so the browser
+ *   couldn't read the bytes via fetch.)
  *
  * Theme during capture:
  *   The capture target is always the off-screen `.doc-page-a4` element

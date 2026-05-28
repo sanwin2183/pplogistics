@@ -1,32 +1,10 @@
-import { useMemo, useRef } from 'react';
+import { useRef } from 'react';
 import { Printer, CheckCircle2, Image as ImageIcon } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { Spinner } from '../../components/Spinner';
 import { fmtDate, fmtDateTime, fmtKg, fmtMoney } from '../../lib/formatters';
 import { useSaveDocAsImage } from './useSaveDocAsImage';
-import {
-  useImageDataUris,
-  allImagesSettled,
-  type ImageDataUriResult,
-} from './useImageDataUris';
 import type { PublicOrder } from '../../types';
-
-/**
- * Resolve a remote image URL to the src to render. See Invoice.tsx for the
- * fuller version of this helper — same contract: data URI when ready,
- * { errored: true } on fetch failure, { src: null } while loading.
- */
-function resolveImg(
-  url: string | null | undefined,
-  dataUriMap: Record<string, ImageDataUriResult> | undefined,
-): { src: string | null; errored: boolean } {
-  if (!url) return { src: null, errored: false };
-  if (!dataUriMap) return { src: url, errored: false };
-  const r = dataUriMap[url];
-  if (r?.status === 'ready' && r.dataUri) return { src: r.dataUri, errored: false };
-  if (r?.status === 'error') return { src: null, errored: true };
-  return { src: null, errored: false };
-}
 
 /**
  * Receipt for paid orders (status === 'paid').
@@ -37,94 +15,72 @@ function resolveImg(
  *   2. Off-screen .doc-page-a4 — A4 portrait, captured by html-to-image
  *      and promoted to the print target by @media print rules.
  *
- * What the A4 receipt shows that the Invoice doesn't:
- *   - A prominent "PAID" corner watermark.
- *   - A "Paid via …" line derived from order.paymentProof (proof-verified
- *     vs externally marked) instead of any QR / payment-method block.
- *     The interactive PaymentSection on the public page is unmounted at
- *     status='paid' so there's nothing duplicating this anyway.
+ * Images on the A4 doc: business.logoDataUri is inlined by the
+ * getTrackingOrder Cloud Function (server-side fetch + base64). On-screen
+ * card uses the raw URL.
  *
- * §11: no payouts / profits / payment-proof image URL touched — we only
- * use the public `paymentApprovedAt`, the boolean presence of
- * `paymentProof` (already on PublicOrder), and `customerFirstName`.
+ * §11: no payouts / profit / payment-proof image URL touched — we use
+ * paymentApprovedAt, the boolean presence of paymentProof (already on
+ * PublicOrder), customerFirstName, and business.{name,logoUrl,logoDataUri}.
  */
 export function Receipt({ order }: { order: PublicOrder }) {
   const docRef = useRef<HTMLDivElement | null>(null);
   const { save, saving } = useSaveDocAsImage(`receipt-${order.orderNumber}`);
 
-  // Receipt only has one remote image — the business logo. (No QR /
-  // payment block on receipts.) Pre-fetched as a data: URI so the
-  // capture + print paths don't depend on a cross-origin fetch.
-  const imageUrls = useMemo(
-    () => (order.business.logoUrl ? [order.business.logoUrl] : []),
-    [order.business.logoUrl],
-  );
-  const dataUriMap = useImageDataUris(imageUrls);
-  const ready = allImagesSettled(dataUriMap, imageUrls);
-
   return (
     <>
       {/* 1. ON-SCREEN card — interactive copy. */}
       <section className="card-soft print-screen-hidden relative overflow-hidden p-6 space-y-5">
-        <ReceiptBody order={order} />
+        <ReceiptBody order={order} mode="screen" />
 
-        {/* Save / print toolbar — captured-skip + no-print. Disabled until
-            the logo has been inlined as a data URI (capture/print would
-            otherwise show a broken-image placeholder). */}
+        {/* Save / print toolbar — captured-skip + no-print. */}
         <div
           data-capture-skip="true"
           className="no-print grid grid-cols-2 gap-2 border-t border-border pt-4"
         >
-          <Button
-            variant="outline"
-            onClick={() => save(docRef.current)}
-            disabled={saving || !ready}
-          >
-            {(saving || !ready) ? <Spinner className="text-primary" /> : <ImageIcon />}
-            {saving ? 'Saving…' : !ready ? 'Preparing…' : 'Save as image'}
+          <Button variant="outline" onClick={() => save(docRef.current)} disabled={saving}>
+            {saving ? <Spinner className="text-primary" /> : <ImageIcon />}
+            {saving ? 'Saving…' : 'Save as image'}
           </Button>
-          <Button variant="outline" onClick={() => window.print()} disabled={!ready}>
-            <Printer /> {!ready ? 'Preparing…' : 'Print / PDF'}
+          <Button variant="outline" onClick={() => window.print()}>
+            <Printer /> Print / PDF
           </Button>
         </div>
       </section>
 
-      {/* 2. OFF-SCREEN A4 doc — capture + print target. Uses the data-URI
-          logo via dataUriMap. relative so the absolute PAID stamp inside
-          ReceiptBody anchors to this container, not the viewport. */}
+      {/* 2. OFF-SCREEN A4 doc — capture + print target. relative so the
+          absolute PAID stamp inside ReceiptBody anchors here, not the
+          viewport. */}
       <div ref={docRef} className="doc-page-a4 relative space-y-6" aria-hidden="true">
-        <ReceiptBody order={order} dataUriMap={dataUriMap} />
+        <ReceiptBody order={order} mode="a4" />
       </div>
     </>
   );
 }
 
 /**
- * Shared receipt body. The PAID corner stamp uses position:absolute, so
- * whichever wrapper renders this MUST be position-relative (the on-screen
- * card uses `relative overflow-hidden`; the A4 doc uses `relative`).
+ * Shared receipt body. mode='screen' uses business.logoUrl for the live
+ * <img>; mode='a4' uses business.logoDataUri so the capture + print
+ * paths don't depend on a cross-origin fetch.
  *
- * - On-screen call: omit dataUriMap → logo renders against its original
- *   Firebase Storage URL.
- * - A4-doc call: pass dataUriMap → logo renders from inlined data: URI
- *   so capture + print don't depend on a cross-origin fetch.
+ * The PAID corner stamp uses position:absolute, so whichever wrapper
+ * renders this MUST be position-relative (the on-screen card uses
+ * `relative overflow-hidden`; the A4 doc uses `relative`).
  */
-function ReceiptBody({
-  order,
-  dataUriMap,
-}: {
-  order: PublicOrder;
-  dataUriMap?: Record<string, ImageDataUriResult>;
-}) {
-  const logo = resolveImg(order.business.logoUrl, dataUriMap);
-  // Heuristic for the "Paid via" line — paidVia isn't in PublicOrder yet
-  // (would require a function deploy), but the public response DOES
-  // include the sanitized paymentProof object whenever the customer
+function ReceiptBody({ order, mode }: { order: PublicOrder; mode: 'screen' | 'a4' }) {
+  const logoSrc =
+    mode === 'a4'
+      ? (order.business.logoDataUri ?? null)
+      : (order.business.logoUrl ?? null);
+
+  // Heuristic for the "Paid via" line — paidVia isn't in PublicOrder
+  // (would require an additional function deploy), but the public response
+  // DOES include the sanitized paymentProof object whenever the customer
   // uploaded a screenshot. Presence ⇒ proof-verified path; absence at
   // status='paid' ⇒ the admin used "Mark as paid (external)". The
-  // function strips the image URL per §11, so we're only reading the
+  // function strips the image URL per §11 so we're only reading the
   // boolean existence + the customer-uploaded uploadedAt timestamp,
-  // which is non-sensitive.
+  // which are non-sensitive.
   const paidViaLabel = order.paymentProof
     ? 'Bank transfer / online payment (proof verified)'
     : 'Direct payment (recorded by sender)';
@@ -144,12 +100,8 @@ function ReceiptBody({
           <h1 className="text-2xl font-semibold tracking-tight">Receipt</h1>
           <p className="mt-0.5 text-xs text-muted-foreground tabular-nums">#{order.orderNumber}</p>
         </div>
-        {logo.src ? (
-          <img
-            src={logo.src}
-            alt={order.business.name}
-            className="h-10 max-w-[7rem] object-contain"
-          />
+        {logoSrc ? (
+          <img src={logoSrc} alt={order.business.name} className="h-10 max-w-[7rem] object-contain" />
         ) : (
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <CheckCircle2 className="h-5 w-5" />
@@ -227,8 +179,7 @@ function ReceiptBody({
       </div>
 
       {/* Paid-via panel — the receipt's analogue of the invoice's payment
-          block. NO QR, NO bank/account details (already paid — those would
-          confuse the customer about whether further payment is needed). */}
+          block. NO QR, NO bank/account details (already paid). */}
       <section className="rounded-lg border border-status-paid bg-status-paid/40 p-4">
         <div className="flex items-start gap-3">
           <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-status-paid-fg" />

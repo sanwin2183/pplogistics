@@ -197,6 +197,28 @@ export interface ActivityEntry {
 
 // ---------- Public tracking (sanitized) ----------
 
+/**
+ * Public-shape extensions over the admin types.
+ *
+ * The function inlines the QR + logo bytes as base64 data: URIs in the
+ * response so the public tracking page's A4 capture document can render
+ * them without a browser fetch() of Firebase Storage URLs (default
+ * Storage CORS blocks fetch but not <img>). The fields here are
+ * additive — qrUrl / logoUrl remain so the on-screen card can still
+ * point a live <img> at the original URL.
+ *
+ * §11: qrUrl / logoUrl are ALREADY public on the response; qrDataUri /
+ * logoDataUri carry the same bytes inline, so no exposure surface
+ * grows. Either field can be null when the server-side fetch failed
+ * (graceful: client renders a fallback).
+ */
+export type PublicPaymentMethod = PaymentMethod & {
+  qrDataUri?: string | null;
+};
+export type PublicBusinessInfo = BusinessInfo & {
+  logoDataUri?: string | null;
+};
+
 /** Shape returned by the getTrackingOrder Cloud Function — no payouts/profit/PII. */
 export interface PublicOrder {
   orderNumber: string;
@@ -208,10 +230,10 @@ export interface PublicOrder {
   status: OrderStatus;
   statusHistory: StatusHistoryEntry[];
   flyer?: { firstName: string; flightDate: FsTs; route: Route };
-  paymentMethods: PaymentMethod[];
+  paymentMethods: PublicPaymentMethod[];
   paymentProof?: { uploadedAt: FsTs; note?: string };
   paymentApprovedAt?: FsTs;
-  business: BusinessInfo;
+  business: PublicBusinessInfo;
   paidAt?: FsTs;
   /** Order creation date — used as the "Issued" date on the invoice/receipt. */
   createdAt?: FsTs;

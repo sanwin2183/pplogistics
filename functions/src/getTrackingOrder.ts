@@ -6,6 +6,70 @@ import { getApp } from 'firebase-admin/app';
 const DB_ID = 'default';
 
 /**
+ * Server-side fetch of a (presumably image) URL, returned as a base64
+ * data: URI. Used to inline the business logo and each active payment
+ * method's QR in the response so the public tracking page's A4 capture
+ * document doesn't need a browser fetch() of Firebase Storage URLs (which
+ * the default bucket CORS policy blocks — `<img>` displays fine but
+ * fetch() rejects with TypeError: Failed to fetch).
+ *
+ * Returns null on any failure (404, network, indeterminable MIME). The
+ * caller MUST NOT throw on null — the client renders a graceful "QR
+ * unavailable - use account details" box in the document when qrDataUri
+ * is missing, and the package icon when logoDataUri is missing. Never
+ * fail the whole tracking response over one image.
+ *
+ * Node 20's global fetch + Buffer (engines.node = "20" in
+ * functions/package.json) means no axios / node-fetch dependency.
+ */
+async function fetchImageAsDataUri(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      // eslint-disable-next-line no-console
+      console.warn(`[getTrackingOrder] image fetch HTTP ${res.status}: ${url}`);
+      return null;
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    // Trust the response Content-Type header first; fall back to magic-byte
+    // sniffing if the header is missing or not image/*. Firebase Storage
+    // does set Content-Type on uploads but we shouldn't assume.
+    let mime = res.headers.get('content-type')?.split(';')[0]?.trim() ?? null;
+    if (!mime || !mime.startsWith('image/')) {
+      mime = sniffImageMime(buf);
+    }
+    if (!mime) {
+      // eslint-disable-next-line no-console
+      console.warn(`[getTrackingOrder] could not determine image MIME for ${url}`);
+      return null;
+    }
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[getTrackingOrder] image fetch threw: ${url}`, err);
+    return null;
+  }
+}
+
+/** Magic-byte image format detection — fallback when Content-Type isn't set. */
+function sniffImageMime(bytes: Buffer): string | null {
+  if (bytes.length < 4) return null;
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+  // JPEG: FF D8 FF
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  // GIF: 47 49 46 38
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return 'image/gif';
+  // WebP: 'RIFF' .... 'WEBP'
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+  ) return 'image/webp';
+  return null;
+}
+
+/**
  * Public callable — returns a SANITIZED view of an order keyed by trackingSlug.
  *
  * Sanitization rules (per spec):
@@ -89,6 +153,40 @@ export const getTrackingOrder = onCall(
     const rawProof = order.paymentProof as { uploadedAt?: unknown; note?: string } | undefined;
     const paymentProof = rawProof ? { uploadedAt: rawProof.uploadedAt, note: rawProof.note } : undefined;
 
+    // --- Inline business logo + each active payment method's QR as base64
+    //     data: URIs so the public tracking page's A4 capture document can
+    //     render them without a browser fetch (Firebase Storage's default
+    //     CORS config blocks fetch() against firebasestorage.googleapis.com
+    //     URLs, even though <img> displays them fine). Server-side fetch
+    //     bypasses browser CORS entirely.
+    //
+    //     §11 audit on the new fields:
+    //       - business.logoDataUri: inlined bytes of business.logoUrl which
+    //         is ALREADY returned (and already public). Adding the bytes
+    //         doesn't expose anything that wasn't reachable via the URL.
+    //       - paymentMethods[].qrDataUri: inlined bytes of paymentMethods
+    //         [].qrUrl which is ALREADY returned. Same story.
+    //     No payouts, profit, customer phone, flyer phone, or proof image
+    //     URL is touched. Sanitizer is untouched.
+    //
+    //     Failures are graceful: a per-image null lets the client fall back
+    //     to its "QR unavailable - use account details" box and the package
+    //     icon respectively, without failing the whole tracking response.
+    const businessLogoUrl =
+      typeof settings.business?.logoUrl === 'string' ? settings.business.logoUrl : null;
+    const [logoDataUri, ...qrDataUris] = await Promise.all([
+      businessLogoUrl ? fetchImageAsDataUri(businessLogoUrl) : Promise.resolve(null),
+      ...paymentMethods.map((m) => {
+        const qrUrl = typeof m.qrUrl === 'string' ? m.qrUrl : null;
+        return qrUrl ? fetchImageAsDataUri(qrUrl) : Promise.resolve(null);
+      }),
+    ]);
+
+    const paymentMethodsWithDataUri = paymentMethods.map((m, i) => ({
+      ...m,
+      qrDataUri: qrDataUris[i] ?? null,
+    }));
+
     return {
       orderNumber: String(order.orderNumber ?? ''),
       trackingSlug: slug,
@@ -99,7 +197,7 @@ export const getTrackingOrder = onCall(
       status: order.status,
       statusHistory: order.statusHistory ?? [],
       flyer,
-      paymentMethods,
+      paymentMethods: paymentMethodsWithDataUri,
       paymentProof,
       paymentApprovedAt: order.paymentApprovedAt ?? null,
       paidAt: order.paymentApprovedAt ?? null,
@@ -109,6 +207,7 @@ export const getTrackingOrder = onCall(
         name: String(settings.business?.name ?? 'PP Logistics'),
         tagline: settings.business?.tagline ?? undefined,
         logoUrl: settings.business?.logoUrl ?? undefined,
+        logoDataUri: logoDataUri ?? undefined,
         contactPhone: settings.business?.contactPhone ?? undefined,
         contactEmail: settings.business?.contactEmail ?? undefined,
         contactTelegram: settings.business?.contactTelegram ?? undefined,

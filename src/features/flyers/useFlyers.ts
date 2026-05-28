@@ -8,6 +8,7 @@ import {
   updateDoc,
   deleteDoc,
 } from 'firebase/firestore';
+import { toast } from 'sonner';
 import { db } from '../../lib/firebase';
 import { fetchCol, fetchDoc, orderBy, where } from '../../lib/queries';
 import type { Flyer, FlyerStatus } from '../../types';
@@ -60,6 +61,9 @@ export function useCreateFlyer() {
       return ref.id;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to create flyer');
+    },
   });
 }
 
@@ -74,6 +78,9 @@ export function useUpdateFlyer() {
       });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to update flyer');
+    },
   });
 }
 
@@ -84,5 +91,8 @@ export function useDeleteFlyer() {
       await deleteDoc(doc(db, 'flyers', id));
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete flyer');
+    },
   });
 }

@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter } from '../../components/ui/sheet';
 import { ROUTES, ROUTE_LABELS, FLYER_STATUSES, FLYER_STATUS_LABELS } from '../../lib/status';
 import { toDate } from '../../lib/formatters';
+import { firstErrorMessage } from '../../lib/forms';
 import type { Flyer, FlyerStatus, Route } from '../../types';
 import { useCreateFlyer, useUpdateFlyer } from './useFlyers';
 
@@ -83,34 +84,48 @@ export function FlyerFormSheet({
     }
   }, [open, flyer, reset]);
 
-  const onSubmit = handleSubmit(async (data) => {
-    const payload = {
-      name: data.name,
-      phone: data.phone,
-      route: data.route as Route,
-      flightDate: dayjs(data.flightDate).toDate(),
-      flightNumber: data.flightNumber || undefined,
-      kgAvailable: data.kgAvailable,
-      ratePerKg: data.ratePerKg,
-      prohibitedItems: data.prohibitedItems
-        ? data.prohibitedItems.split(',').map((s) => s.trim()).filter(Boolean)
-        : [],
-      status: data.status as FlyerStatus,
-      notes: data.notes || undefined,
-    };
-    try {
-      if (flyer) {
-        await update.mutateAsync({ ...flyer, ...payload, kgUsed: flyer.kgUsed });
-        toast.success('Flyer updated');
-      } else {
-        await create.mutateAsync(payload);
-        toast.success('Flyer added');
+  const onSubmit = handleSubmit(
+    async (data) => {
+      const trimmedFlightNumber = data.flightNumber?.trim();
+      const trimmedNotes = data.notes?.trim();
+      // Conditionally INCLUDE optional keys only when they have a value, so
+      // we never pass `undefined` (Firestore SDK v11 rejects it at the SDK
+      // boundary) and we don't write empty-string noise into the doc either.
+      const payload = {
+        name: data.name,
+        phone: data.phone,
+        route: data.route as Route,
+        flightDate: dayjs(data.flightDate).toDate(),
+        kgAvailable: data.kgAvailable,
+        ratePerKg: data.ratePerKg,
+        prohibitedItems: data.prohibitedItems
+          ? data.prohibitedItems.split(',').map((s) => s.trim()).filter(Boolean)
+          : [],
+        status: data.status as FlyerStatus,
+        ...(trimmedFlightNumber ? { flightNumber: trimmedFlightNumber } : {}),
+        ...(trimmedNotes ? { notes: trimmedNotes } : {}),
+      };
+      try {
+        if (flyer) {
+          await update.mutateAsync({ ...flyer, ...payload, kgUsed: flyer.kgUsed });
+          toast.success('Flyer updated');
+        } else {
+          await create.mutateAsync(payload);
+          toast.success('Flyer added');
+        }
+        onClose();
+      } catch {
+        // mutation.onError already toasted the failure.
       }
-      onClose();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Save failed');
-    }
-  });
+    },
+    // Validation-failure handler — without this the form was silent whenever
+    // any field other than name/phone failed validation (route, flightDate,
+    // kgAvailable, ratePerKg, status had no inline error rendering).
+    (errs) => {
+      toast.error(firstErrorMessage(errs) ?? 'Please fix the highlighted fields');
+      console.warn('[FlyerFormSheet] invalid:', errs);
+    },
+  );
 
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
@@ -140,6 +155,7 @@ export function FlyerFormSheet({
                   ))}
                 </SelectContent>
               </Select>
+              {errors.route && <p className="text-xs text-destructive">{errors.route.message}</p>}
             </div>
             <div className="space-y-1.5">
               <Label>Status</Label>
@@ -151,26 +167,31 @@ export function FlyerFormSheet({
                   ))}
                 </SelectContent>
               </Select>
+              {errors.status && <p className="text-xs text-destructive">{errors.status.message}</p>}
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="flightDate">Flight date</Label>
               <Input id="flightDate" type="datetime-local" {...register('flightDate')} />
+              {errors.flightDate && <p className="text-xs text-destructive">{errors.flightDate.message}</p>}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="flightNumber">Flight no.</Label>
               <Input id="flightNumber" placeholder="TG303" {...register('flightNumber')} />
+              {errors.flightNumber && <p className="text-xs text-destructive">{errors.flightNumber.message}</p>}
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="kgAvailable">Capacity (kg)</Label>
               <Input id="kgAvailable" type="number" step="any" min={0} inputMode="decimal" {...register('kgAvailable')} />
+              {errors.kgAvailable && <p className="text-xs text-destructive">{errors.kgAvailable.message}</p>}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="ratePerKg">Pay rate (THB/kg)</Label>
               <Input id="ratePerKg" type="number" step="any" min={0} inputMode="decimal" {...register('ratePerKg')} />
+              {errors.ratePerKg && <p className="text-xs text-destructive">{errors.ratePerKg.message}</p>}
             </div>
           </div>
           <div className="space-y-1.5">

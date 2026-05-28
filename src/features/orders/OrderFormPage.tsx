@@ -23,6 +23,7 @@ import { useUpcomingFlyers } from '../flyers/useFlyers';
 import { useSettings } from '../settings/useSettings';
 import { useCreateOrder } from './useOrders';
 import { CustomerFormSheet } from '../customers/CustomerFormSheet';
+import { firstErrorMessage } from '../../lib/forms';
 import dayjs from 'dayjs';
 
 const itemSchema = z.object({
@@ -41,30 +42,6 @@ const assignmentSchema = z.object({
   payoutRatePerKg: z.coerce.number().min(0),
   payoutAmount: z.coerce.number(),
 });
-
-/**
- * Walk a (possibly nested) react-hook-form errors tree and return the first
- * `message` string we find. Used to turn a silent submit-failure into a toast.
- */
-function firstErrorMessage(errs: unknown): string | null {
-  if (!errs) return null;
-  if (typeof errs === 'object') {
-    const o = errs as Record<string, unknown>;
-    if (typeof o.message === 'string') return o.message;
-    if (Array.isArray(errs)) {
-      for (const child of errs) {
-        const m = firstErrorMessage(child);
-        if (m) return m;
-      }
-      return null;
-    }
-    for (const k of Object.keys(o)) {
-      const m = firstErrorMessage(o[k]);
-      if (m) return m;
-    }
-  }
-  return null;
-}
 
 const schema = z
   .object({

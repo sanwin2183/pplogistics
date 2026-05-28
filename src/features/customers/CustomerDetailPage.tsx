@@ -1,25 +1,59 @@
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Pencil, Phone, MessageCircle, Package } from 'lucide-react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft, Pencil, Phone, MessageCircle, Package, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent } from '../../components/ui/card';
 import { Skeleton } from '../../components/ui/skeleton';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
 import { FullPageSpinner } from '../../components/Spinner';
 import { MoneyDisplay } from '../../components/MoneyDisplay';
 import { OrderStatusBadge } from '../../components/StatusBadge';
 import { fmtDate, fmtMoney } from '../../lib/formatters';
 import { CustomerFormSheet } from './CustomerFormSheet';
-import { useCustomer } from './useCustomers';
+import { useCustomer, useDeleteCustomer } from './useCustomers';
 import { useOrdersByCustomer } from '../orders/useOrders';
 
 export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { data: customer, isLoading } = useCustomer(id);
   const { data: orders } = useOrdersByCustomer(id);
   const [editing, setEditing] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const del = useDeleteCustomer();
 
   if (isLoading) return <FullPageSpinner />;
   if (!customer) return <p className="text-sm text-muted-foreground">Customer not found.</p>;
+
+  // Option A — block deletion when orders exist so we don't orphan order
+  // history or lose irreplaceable rollups (totalSpent, outstandingBalance).
+  // Reads customer.totalOrders, the denormalized rollup already on the doc,
+  // so no extra query is needed.
+  function openDeleteDialog() {
+    if (!customer) return;
+    if (customer.totalOrders > 0) {
+      const n = customer.totalOrders;
+      toast.error(
+        `This customer has ${n} order${n === 1 ? '' : 's'} and can't be deleted. ` +
+          'Delete those orders first, or edit the customer to mark them inactive.',
+      );
+      return;
+    }
+    setDeleteOpen(true);
+  }
+
+  async function confirmDelete() {
+    if (!customer) return;
+    try {
+      await del.mutateAsync(customer.id);
+      setDeleteOpen(false);
+      toast.success('Customer deleted');
+      navigate('/customers');
+    } catch {
+      // useDeleteCustomer.onError already toasted; dialog stays open for retry.
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -44,9 +78,19 @@ export function CustomerDetailPage() {
               </div>
             </div>
           </div>
-          <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
-            <Pencil /> Edit
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+              <Pencil /> Edit
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Delete customer"
+              onClick={openDeleteDialog}
+            >
+              <Trash2 />
+            </Button>
+          </div>
         </div>
         {customer.notes && (
           <p className="mt-4 rounded-lg bg-muted/50 p-3 text-sm text-muted-foreground">{customer.notes}</p>
@@ -91,6 +135,29 @@ export function CustomerDetailPage() {
       </div>
 
       <CustomerFormSheet open={editing} customer={customer} onClose={() => setEditing(false)} />
+
+      {/* Delete confirmation — only reachable when totalOrders === 0 (Option A). */}
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete customer</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 text-sm">
+            <p>
+              Delete <span className="font-medium text-foreground">{customer.name}</span>?
+            </p>
+            <p className="text-muted-foreground">
+              This cannot be undone. They have no orders, so there's nothing else to clean up.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={confirmDelete} disabled={del.isPending}>
+              {del.isPending ? 'Deleting…' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { addDoc, collection, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { db } from '../../lib/firebase';
 import { fetchCol, fetchDoc, orderBy } from '../../lib/queries';
@@ -51,6 +51,26 @@ export function useUpdateCustomer() {
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : 'Failed to update customer');
+    },
+  });
+}
+
+/**
+ * Hard-delete a customer doc. CustomerDetailPage gates this behind a check on
+ * `customer.totalOrders === 0` (Option A — block when orders exist) so we
+ * don't orphan order history or lose irreplaceable rollups (totalSpent /
+ * outstandingBalance). The Firestore rule `match /customers/{id} { allow
+ * write: if isAdmin() }` permits delete (write covers delete).
+ */
+export function useDeleteCustomer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await deleteDoc(doc(db, 'customers', id));
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete customer');
     },
   });
 }

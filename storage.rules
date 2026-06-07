@@ -2,8 +2,17 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
 
+    // Admin gate. Two-part check so admin uploads / reads aren't blocked
+    // by a missing custom claim:
+    //   1) `request.auth.token.role == 'admin'` — the canonical claim path.
+    //   2) Hardcoded owner UID fallback — same restrictiveness as the claim
+    //      but independent of claim propagation / token cache state.
+    // Mirrored in firestore.rules — keep both in sync if the UID rotates.
     function isAdmin() {
-      return request.auth != null && request.auth.token.role == 'admin';
+      return request.auth != null && (
+        request.auth.token.role == 'admin' ||
+        request.auth.uid == 'XmGs95p7sSb5L4zZVO9nxHThe6B3'
+      );
     }
     function isImage() {
       return request.resource.contentType.matches('image/.*');
@@ -25,9 +34,20 @@ service firebase.storage {
       allow write: if isAdmin() && isImage() && under5MB();
     }
 
-    // Order packing / receipt photos — admin only.
+    // Order packing / status photos — admin writes, public reads.
+    // Public read is necessary because the customer tracking page (/t/<slug>)
+    // renders these as a thumbnail gallery + lightbox, and the customer isn't
+    // authenticated. URLs contain an unguessable orderId + per-file nanoid, so
+    // the exposure surface is anyone-with-the-URL — acceptable for warehouse /
+    // status photos (not sensitive). Mirrors the `qrcodes/` + `branding/`
+    // public-read + admin-write pattern. Side effect: admin uploads now resolve
+    // `getDownloadURL` after `uploadBytes` without depending on the admin
+    // custom claim being on the ID token, which fixes the
+    // "storage/unauthorized on read-back" failure when the claim hadn't yet
+    // propagated to the client's cached token.
     match /orders/{orderId}/photos/{file} {
-      allow read, write: if isAdmin() && (request.resource == null || (isImage() && under5MB()));
+      allow read: if true;
+      allow write: if isAdmin() && (request.resource == null || (isImage() && under5MB()));
     }
 
     // Payment proofs uploaded by customers from the tracking page — writable

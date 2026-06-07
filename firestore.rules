@@ -2,8 +2,23 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Admin gate. Two-part check so the app is never locked out by a missing
+    // custom claim:
+    //   1) `request.auth.token.role == 'admin'` — the canonical claim path.
+    //      Set via `scripts/setAdmin.ts` (uses Admin SDK setCustomUserClaims).
+    //      Riding on the ID token means no per-eval document read.
+    //   2) UID allowlist — hardcoded owner UID as a fallback. Same
+    //      restrictiveness as the claim (only THIS uid passes, no one else)
+    //      but doesn't depend on the claim having propagated to the client's
+    //      cached ID token. This is the unblocking path when setAdmin hasn't
+    //      run yet, or when the token hasn't refreshed after promotion.
+    // Both rule files (firestore.rules + storage.rules) carry the same
+    // definition — keep them in sync if you ever rotate the UID.
     function isAdmin() {
-      return request.auth != null && request.auth.token.role == 'admin';
+      return request.auth != null && (
+        request.auth.token.role == 'admin' ||
+        request.auth.uid == 'XmGs95p7sSb5L4zZVO9nxHThe6B3'
+      );
     }
 
     // Admin-only collections.

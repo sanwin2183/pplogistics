@@ -29,17 +29,29 @@ const STEP_ICONS: Record<OrderStatus, typeof Circle> = {
  * - `steps`: which step labels to show. Defaults to the public-friendly 6-step view
  *   (Pending → … → Paid). Pass ORDER_STATUSES for the full admin view.
  * - `pulse`: render a pulsing ring on the current step (used on the public page).
+ * - `labelOverride` / `descriptionOverride`: per-step copy overrides. When a key
+ *   is present here, the timeline uses the override value instead of the default
+ *   from ORDER_STATUS_LABELS / ORDER_STATUS_DESCRIPTIONS. Used by the customer
+ *   tracking page to inject route-aware copy (e.g. "Arrived at Yangon" on
+ *   in_transit) without rewriting the underlying schema or affecting the admin
+ *   timeline render. Admin callers leave these undefined and get the defaults.
+ *   A statusHistory entry's `note` still wins over the override (same precedence
+ *   the description default has — owner-typed context beats canned copy).
  */
 export function OrderStatusTimeline({
   status,
   history,
   steps = PUBLIC_TIMELINE_STEPS,
   pulse = false,
+  labelOverride,
+  descriptionOverride,
 }: {
   status: OrderStatus;
   history: StatusHistoryEntry[];
   steps?: OrderStatus[];
   pulse?: boolean;
+  labelOverride?: Partial<Record<OrderStatus, string>>;
+  descriptionOverride?: Partial<Record<OrderStatus, string>>;
 }) {
   const currentIdx = steps.indexOf(status);
   // Awaiting_payment is folded under Delivered visually on public page — bump idx.
@@ -86,14 +98,14 @@ export function OrderStatusTimeline({
                     reached ? 'text-foreground' : 'text-muted-foreground',
                   )}
                 >
-                  {ORDER_STATUS_LABELS[step]}
+                  {labelOverride?.[step] ?? ORDER_STATUS_LABELS[step]}
                 </span>
                 {entry?.timestamp && (
                   <time className="text-xs tabular-nums text-muted-foreground">{fmtDateTime(entry.timestamp)}</time>
                 )}
               </div>
               <p className={cn('mt-0.5 text-xs', reached ? 'text-muted-foreground' : 'text-muted-foreground/70')}>
-                {entry?.note || ORDER_STATUS_DESCRIPTIONS[step]}
+                {entry?.note || descriptionOverride?.[step] || ORDER_STATUS_DESCRIPTIONS[step]}
               </p>
             </div>
           </li>

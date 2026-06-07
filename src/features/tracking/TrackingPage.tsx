@@ -6,10 +6,11 @@ import {
   Plane,
   AlertCircle,
   Sparkles,
+  X,
 } from 'lucide-react';
 import { functions } from '../../lib/firebase';
 import { fmtDate } from '../../lib/formatters';
-import { ROUTE_LABELS } from '../../lib/status';
+import { ROUTE_LABELS, publicTimelineOverrides } from '../../lib/status';
 import { Spinner } from '../../components/Spinner';
 import { OrderStatusTimeline } from '../orders/OrderStatusTimeline';
 import { Invoice } from './Invoice';
@@ -22,6 +23,20 @@ export function TrackingPage() {
   const [order, setOrder] = useState<PublicOrder | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Index (not URL) so swiping forward/back inside the lightbox is a 1-liner
+  // if we add it later. `null` means closed.
+  const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
+
+  // ESC closes the lightbox — basic accessibility for desktop / external
+  // keyboard users. Touch users tap the backdrop or close button.
+  useEffect(() => {
+    if (lightboxIdx === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightboxIdx(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightboxIdx]);
 
   useEffect(() => {
     if (!slug) return;
@@ -117,11 +132,74 @@ export function TrackingPage() {
             </div>
           )}
 
-          {/* Timeline — on-screen narrative. Not part of the document. */}
-          <section className="card-soft p-6 no-print">
-            <h2 className="mb-4 text-sm font-semibold">Status</h2>
-            <OrderStatusTimeline status={order.status} history={order.statusHistory} pulse />
-          </section>
+          {/* Timeline — on-screen narrative. Not part of the document.
+              The publicTimelineOverrides helper rewrites the in_transit
+              step from the generic "In Transit" to "Arrived at <City>" so
+              the customer sees the real-world meaning rather than the
+              in-air state name from the schema. Routes through
+              order.flyer?.route — falls back to the default copy when no
+              flyer is assigned yet (handled inside the helper). */}
+          {(() => {
+            const overrides = publicTimelineOverrides(order.flyer?.route);
+            return (
+              <section className="card-soft p-6 no-print">
+                <h2 className="mb-4 text-sm font-semibold">Status</h2>
+                <OrderStatusTimeline
+                  status={order.status}
+                  history={order.statusHistory}
+                  pulse
+                  labelOverride={overrides.labels}
+                  descriptionOverride={overrides.descriptions}
+                />
+              </section>
+            );
+          })()}
+
+          {/*
+            Photos gallery — admin-uploaded warehouse / status photos. Hidden
+            entirely when there are no photos (zero-state would be more chrome
+            than content). Horizontal-scroll thumbnails with snap-x so the
+            customer can flick through; tap any thumb to open the fullscreen
+            lightbox below. The thumb row uses the same scroll-+-snap pattern
+            as the Settings tab strip: hidden scrollbar, [scrollbar-width:none]
+            for Firefox + ::-webkit-scrollbar:hidden for WebKit.
+
+            Section is excluded from print/save-as-image (no-print) because
+            the document target is just the invoice/receipt card.
+          */}
+          {order.photos.length > 0 && (
+            <section className="card-soft p-6 no-print">
+              <h2 className="mb-4 text-sm font-semibold">Photos</h2>
+              <div
+                className="
+                  -mx-2 flex gap-2 overflow-x-auto px-2 snap-x snap-mandatory
+                  [scrollbar-width:none] [&::-webkit-scrollbar]:hidden
+                "
+              >
+                {order.photos.map((url, i) => (
+                  <button
+                    key={url}
+                    type="button"
+                    onClick={() => setLightboxIdx(i)}
+                    className="
+                      shrink-0 snap-start overflow-hidden rounded-md
+                      ring-1 ring-border/60 transition-transform
+                      active:scale-[0.97]
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary
+                    "
+                    aria-label={`Open photo ${i + 1} of ${order.photos.length}`}
+                  >
+                    <img
+                      src={url}
+                      alt={`Order photo ${i + 1}`}
+                      className="h-24 w-24 object-cover"
+                      loading="lazy"
+                    />
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Flyer info */}
           {order.flyer && (
@@ -151,6 +229,61 @@ export function TrackingPage() {
           </footer>
         </main>
       </div>
+
+      {/*
+        Lightbox — fullscreen photo preview. Lives outside the max-width
+        column wrapper so it actually covers the full viewport (the column
+        wrapper has `max-w-[480px]` which would clip a centered lightbox on
+        desktop / tablet). Renders only when an index is selected.
+
+        UX:
+          - Tap backdrop OR the X button to close.
+          - Stopping click propagation on the <img> itself prevents an
+            accidental dismissal when the customer taps the photo to pinch-
+            zoom on iOS.
+          - Inert px-safe / pt-safe / pb-safe via padding so the X button
+            doesn't end up under the iOS Dynamic Island in standalone PWA.
+          - no-print so it can't leak into a saved/printed document if the
+            customer hits Save while the lightbox is open.
+      */}
+      {lightboxIdx !== null && order.photos[lightboxIdx] && (
+        <div
+          className="
+            no-print fixed inset-0 z-50 flex items-center justify-center
+            bg-black/90 p-4 pt-[calc(1rem+var(--sa-top))]
+            pb-[calc(1rem+var(--sa-bottom))]
+          "
+          role="dialog"
+          aria-modal="true"
+          aria-label="Photo preview"
+          onClick={() => setLightboxIdx(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setLightboxIdx(null)}
+            aria-label="Close photo preview"
+            className="
+              absolute right-4 z-10
+              top-[calc(1rem+var(--sa-top))]
+              flex h-10 w-10 items-center justify-center rounded-full
+              bg-white/10 text-white backdrop-blur
+              transition-colors hover:bg-white/20
+              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60
+            "
+          >
+            <X className="h-5 w-5" />
+          </button>
+          <div className="absolute left-4 top-[calc(1rem+var(--sa-top))] text-xs text-white/70">
+            {lightboxIdx + 1} / {order.photos.length}
+          </div>
+          <img
+            src={order.photos[lightboxIdx]}
+            alt={`Order photo ${lightboxIdx + 1}`}
+            className="max-h-full max-w-full object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
     </div>
   );
 }

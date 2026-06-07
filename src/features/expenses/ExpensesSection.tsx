@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { Plus, Pencil, Trash2, Receipt } from 'lucide-react';
-import dayjs from 'dayjs';
 import { toast } from 'sonner';
 import { Card, CardContent } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -14,43 +13,92 @@ import {
 } from '../../components/ui/dialog';
 import { MoneyDisplay } from '../../components/MoneyDisplay';
 import { fmtDate, fmtMoney, toDate } from '../../lib/formatters';
-import { useExpensesByMonth, useDeleteExpense } from './useExpenses';
+import { useExpenses, useDeleteExpense } from './useExpenses';
 import { ExpenseFormSheet } from './ExpenseFormSheet';
+import {
+  filterExpensesByRange,
+  type RangeBounds,
+} from '../dashboard/dashboardRange';
 import type { Expense } from '../../types';
 
 /**
- * Expenses card for the Dashboard. Shows this-month total + recent
- * entries + Add/Edit/Delete affordances. Time-scoping defaults to the
- * CURRENT month so the figure matches the Dashboard's existing gross-
- * profit-this-month card (Dashboard relabels the existing card as
- * "gross" and reads this section's total to compute net).
+ * Expenses card for the Dashboard. Phase 2: range-scoped via the
+ * shared RangeBounds shape (lifetime / this-month / pick-month /
+ * custom). Internally pulls ALL expenses with useExpenses() and
+ * filters client-side, then computes total + recent-list off the
+ * filtered subset.
  *
- * Net profit is computed in DashboardPage (not here) because it needs
- * both this card's total AND the orders data. The two cards share the
- * SAME month window via the same dayjs().startOf('month') call shape,
- * so the gross / expenses / net trio is internally consistent.
+ * Why fetch-all + client-filter (vs the previous server-side
+ * useExpensesByMonth):
+ *   - The selectable ranges are arbitrary (Custom can be any window),
+ *     so a fixed monthly query doesn't fit anymore.
+ *   - Expense volume is tiny — at this point a few dozen docs
+ *     lifetime. Pulling all once and slicing in JS is cheaper and
+ *     simpler than range-aware Firestore queries with composite
+ *     indexes.
+ *   - TanStack-Query dedupes the useExpenses() call — DashboardPage
+ *     also reads it for the net-profit calculation, but only one
+ *     network fetch fires per cache window.
+ *
+ * Net profit lives in DashboardPage (needs both this card's total AND
+ * the orders profit). That parent filters by the SAME bounds, so
+ * gross / expenses / net stay internally consistent.
+ *
+ * Add/Edit/Delete don't depend on the range — adding a new expense
+ * creates it for today regardless of the dashboard's current view
+ * window. If the new expense falls inside the active window, it
+ * appears immediately via the TanStack invalidation; if it doesn't,
+ * the card list won't show it but the underlying record is created
+ * correctly.
  */
 export function ExpensesSection({
-  monthStart,
-  monthEnd,
+  bounds,
+  rangeLabel,
 }: {
-  monthStart: Date;
-  monthEnd: Date;
+  /** Resolved bounds from getRangeBounds() in the parent. */
+  bounds: RangeBounds;
+  /** Human-readable label for the period (e.g. "this month",
+   *  "March 2026", "all time"). Composed into the eyebrow + empty
+   *  state copy by the parent so wording stays consistent
+   *  across the dashboard. */
+  rangeLabel: string;
 }) {
-  const { data: expenses, isLoading } = useExpensesByMonth(monthStart, monthEnd);
+  const { data: allExpenses, isLoading } = useExpenses();
   const del = useDeleteExpense();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Expense | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<Expense | null>(null);
 
+  // Range-scoped subset. When bounds.valid === false (Custom with bad
+  // dates) we render empty rather than crash — the dashboard's
+  // DateRangeControl already surfaces the validation message.
+  const expenses = useMemo(
+    () => (allExpenses ? filterExpensesByRange(allExpenses, bounds) : []),
+    [allExpenses, bounds],
+  );
+
   const total = useMemo(
-    () => (expenses ?? []).reduce((s, e) => s + e.amount, 0),
+    () => expenses.reduce((s, e) => s + e.amount, 0),
     [expenses],
   );
 
   const RECENT_LIMIT = 8;
-  const recent = (expenses ?? []).slice(0, RECENT_LIMIT);
-  const moreCount = (expenses?.length ?? 0) - recent.length;
+  // Sort the filtered list newest-date-first so the recent slice
+  // shows the latest entries (useExpenses() already orders by date
+  // desc, but client-side filter preserves that order — keeping the
+  // explicit sort here is robust against future hook changes).
+  const recent = useMemo(
+    () =>
+      [...expenses]
+        .sort((a, b) => {
+          const aT = toDate(a.date)?.getTime() ?? 0;
+          const bT = toDate(b.date)?.getTime() ?? 0;
+          return bT - aT;
+        })
+        .slice(0, RECENT_LIMIT),
+    [expenses],
+  );
+  const moreCount = expenses.length - recent.length;
 
   async function confirmDelete() {
     if (!confirmingDelete) return;
@@ -69,7 +117,7 @@ export function ExpensesSection({
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
             <div className="h-eyebrow flex items-center gap-1.5">
-              <Receipt className="h-3.5 w-3.5" /> Expenses · this month
+              <Receipt className="h-3.5 w-3.5" /> Expenses · {rangeLabel}
             </div>
             {isLoading ? (
               <Skeleton className="mt-1 h-7 w-32" />
@@ -92,7 +140,7 @@ export function ExpensesSection({
           </div>
         ) : recent.length === 0 ? (
           <p className="rounded-lg bg-muted/40 p-4 text-center text-xs text-muted-foreground">
-            No expenses recorded for {dayjs(monthStart).format('MMMM YYYY')} yet.
+            No expenses recorded for {rangeLabel}.
           </p>
         ) : (
           <ul className="divide-y divide-border">
@@ -138,7 +186,7 @@ export function ExpensesSection({
 
         {moreCount > 0 && (
           <p className="mt-3 text-center text-xs text-muted-foreground">
-            +{moreCount} more this month
+            +{moreCount} more in this range
           </p>
         )}
       </CardContent>
@@ -176,7 +224,7 @@ export function ExpensesSection({
             <p className="text-xs text-muted-foreground">
               This cannot be undone. The expense is general overhead and doesn't
               touch any order or customer rollup — removing it just adjusts the
-              month's net profit.
+              net profit for the period it falls in.
             </p>
           </div>
           <DialogFooter>

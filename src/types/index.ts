@@ -70,20 +70,165 @@ export type OrderStatus =
   | 'awaiting_payment'
   | 'paid';
 
+/**
+ * Order item — supports two pricing modes:
+ *
+ *   per_kg (default, legacy): customer charged `weightKg × ratePerKg`,
+ *     flyer paid via category-level kg rates on the assignment
+ *     (categoryRates). This is the original model — all pre-2026-05-29
+ *     orders have only this shape and the `pricingMode` field absent.
+ *
+ *   per_piece (added 2026-05-29): customer charged `pieceCount ×
+ *     ratePerPiece`, flyer paid per piece. The flyer rate lives ON THE
+ *     ITEM (`flyerRatePerPiece`) — co-located with the customer rate.
+ *     Per-piece items have NO weight; they do NOT contribute to
+ *     flyer.kgUsed. By design — a phone box still has physical weight
+ *     but the business deliberately ignores it for capacity tracking.
+ *
+ * `pricingMode` is optional with a `per_kg` default — every legacy item
+ * reads as per-kg without migration. Per-piece-specific fields are also
+ * optional; per-piece items set them, per-kg items omit them.
+ *
+ * `subtotal` stays the canonical stored money number, computed at write
+ * time from whichever mode applies. Readers trust the stored value and
+ * never recompute — same pattern as today.
+ *
+ * `weightKg` for a per-piece item is 0 (or omitted treated as 0). The
+ * form sets it to 0 explicitly so every kg-summing read path naturally
+ * excludes per-piece items. DO NOT use undefined here — Firebase SDK
+ * v11 rejects undefined values mid-document.
+ *
+ * §11 leak boundary for the public surface: `flyerRatePerPiece` is
+ * INTERNAL — it is stripped by getTrackingOrder before the order reaches
+ * the customer. The customer sees pieceCount + ratePerPiece + subtotal
+ * (revenue side, already implied by the totals) but never the flyer-side
+ * rate. Mirrors the existing rule that strips assignment.categoryRates /
+ * payoutRatePerKg / payoutAmount.
+ */
+export type ItemPricingMode = 'per_kg' | 'per_piece';
+
 export interface OrderItem {
   description: string;
   categoryId: string;
   categoryName: string;
+  /** Default: 'per_kg' when absent (legacy items). */
+  pricingMode?: ItemPricingMode;
+  /** Per-kg side. Always present; per-piece items store 0. */
   weightKg: number;
+  /** Per-kg side. 0 for per-piece items. */
   ratePerKg: number;
+  /** Per-piece side. Required when pricingMode === 'per_piece'. */
+  pieceCount?: number;
+  /** Per-piece side. Required when pricingMode === 'per_piece'. */
+  ratePerPiece?: number;
+  /** Per-piece side, INTERNAL (stripped by getTrackingOrder). What we
+   *  pay the flyer per piece for this item. Required when pricingMode
+   *  === 'per_piece'. */
+  flyerRatePerPiece?: number;
+  /**
+   * Flyer-side weight for capacity (flyer.kgUsed) + per-kg payout math.
+   * INTERNAL — stripped from the public tracking surface per §11
+   * (customer must never see what the flyer carried vs what they were
+   * billed for).
+   *
+   * Fallback semantics: absent ⇒ flyer kg == customer weightKg. The
+   * common case (flyer carried exactly what the customer paid for)
+   * needs no extra data; only orders where the flyer carried a
+   * different amount than what was billed populate this.
+   *
+   * Per-piece items ignore this field on read (capacity tracking
+   * already excludes per-piece items by design; getFlyerWeightKg
+   * returns 0 for per-piece items regardless of this value).
+   */
+  flyerWeightKg?: number;
+  /**
+   * Flyer-side piece count for per-piece payout math. INTERNAL —
+   * stripped by getTrackingOrder per §11 alongside flyerRatePerPiece.
+   *
+   * Fallback semantics: absent ⇒ flyer pieces == customer pieceCount.
+   * Only meaningful when pricingMode === 'per_piece'.
+   */
+  flyerPieceCount?: number;
+  /** Canonical stored money number — pre-computed at write time. */
   subtotal: number;
 }
 
+/**
+ * Per-category flyer rate. Mirrors how customer rates are stored on
+ * `OrderItem` (each item has its own ratePerKg), but on the payout side
+ * the rate is paid to the FLYER, not charged to the customer.
+ *
+ * `ratePerKg` is what we pay this flyer for one kg of THIS category in
+ * THIS order. e.g. shoes might pay 350/kg, clothes 200/kg, for the same
+ * flyer on the same order.
+ */
+export interface CategoryRate {
+  categoryId: string;
+  ratePerKg: number;
+}
+
+/**
+ * Flyer assignment on an order.
+ *
+ * Two shapes coexist in the wild (legacy + new) so we don't have to
+ * migrate old orders:
+ *
+ *   LEGACY (pre 2026-05-29): single flat rate per assignment.
+ *     - `payoutRatePerKg` set
+ *     - `categoryRates` absent
+ *     - payout = weightKg × payoutRatePerKg
+ *     - rendered with a "(legacy rate)" badge on the detail page
+ *
+ *   NEW (post 2026-05-29): per-category rate breakdown.
+ *     - `categoryRates` set (one entry per distinct category in the order)
+ *     - `payoutRatePerKg` absent (or 0 — don't read it for new assignments)
+ *     - payout = sum over categoryRates of (order's category kg × rate)
+ *     - rendered as per-category rows on the detail page
+ *
+ * `weightKg` stays per-assignment in both shapes — it's what's used for
+ * the flyer capacity-left calc (sum across all assignments to a flyer
+ * compared to flyer.kgAvailable).
+ *
+ * Known trade-off for split orders (one order across multiple flyers):
+ *   New assignments default `weightKg` to the order's total weight (since
+ *   per-row kg comes from the order, not the assignment), so two
+ *   assignments on the same order each appear to consume the full order
+ *   weight in the capacity-left view, and each computes payout against
+ *   full order kg. This optimises for the common single-flyer case at
+ *   the cost of over-counting splits. Splits already require manual
+ *   bookkeeping; the user accepted this trade-off.
+ *
+ * `payoutAmount` is the universal "what we owe this flyer for this
+ * assignment" number — always written by the form on save, no client
+ * computes it lazily from `categoryRates` later.
+ */
 export interface FlyerAssignment {
   flyerId: string;
   flyerName: string;
+  /**
+   * CUSTOMER-side denormalised total weight for this assignment.
+   * STAYS customer weight after the 2026-06-07 flyer-quantity split —
+   * existing display readers + the dashboard's revenueByRoute
+   * apportionment still want this basis. Capacity (kgUsed) reads
+   * `flyerWeightKg ?? weightKg` instead, so legacy assignments
+   * automatically fall through to this value.
+   */
   weightKg: number;
-  payoutRatePerKg: number;
+  /**
+   * FLYER-side denormalised total weight for this assignment — sum of
+   * every per-kg item's flyer-side kg. Set by the form at submit so
+   * the create/delete transactions can update flyer.kgUsed without
+   * walking items[]. Absent on legacy (pre 2026-06-07) assignments;
+   * every kgUsed reader falls back to `weightKg` in that case.
+   *
+   * Same single-flyer-optimised trade-off as weightKg: each assignment
+   * in a multi-flyer split claims the full flyer-side total.
+   */
+  flyerWeightKg?: number;
+  /** LEGACY — single flat rate. New assignments omit this; old ones keep it for display. */
+  payoutRatePerKg?: number;
+  /** NEW — per-category rate breakdown. Absent on legacy assignments. */
+  categoryRates?: CategoryRate[];
   payoutAmount: number;
   paidOutAt?: FsTs;
 }
@@ -282,7 +427,26 @@ export interface PublicOrder {
   orderNumber: string;
   trackingSlug: string;
   customerFirstName: string;
-  items: Array<Pick<OrderItem, 'description' | 'categoryName' | 'weightKg' | 'ratePerKg' | 'subtotal'>>;
+  /**
+   * Customer-safe per-item shape. Includes pricingMode + the per-piece
+   * customer-side fields (pieceCount, ratePerPiece) so the Invoice +
+   * Receipt can render per-piece items, but explicitly EXCLUDES
+   * `flyerRatePerPiece` per §11. The customer sees the price they paid;
+   * the flyer-side rate stays internal.
+   */
+  items: Array<
+    Pick<
+      OrderItem,
+      | 'description'
+      | 'categoryName'
+      | 'pricingMode'
+      | 'weightKg'
+      | 'ratePerKg'
+      | 'pieceCount'
+      | 'ratePerPiece'
+      | 'subtotal'
+    >
+  >;
   totalWeightKg: number;
   totalAmount: number;
   status: OrderStatus;
@@ -295,4 +459,13 @@ export interface PublicOrder {
   paidAt?: FsTs;
   /** Order creation date — used as the "Issued" date on the invoice/receipt. */
   createdAt?: FsTs;
+  /**
+   * Warehouse / status photos uploaded by admin (e.g. received-at-warehouse,
+   * packed). Rendered as a tap-to-open thumbnail gallery on the tracking page.
+   * Always an array — empty when the order has no photos. Storage URLs are
+   * fine to expose because `/orders/{orderId}/photos/{file}` is `allow read: if
+   * true` in storage.rules (the URL itself is the auth, same model as the
+   * already-public `qrcodes/` + `branding/` paths).
+   */
+  photos: string[];
 }

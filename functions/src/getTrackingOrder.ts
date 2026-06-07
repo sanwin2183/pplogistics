@@ -74,6 +74,19 @@ function sniffImageMime(bytes: Buffer): string | null {
  *
  * Sanitization rules (per spec):
  *   - Strip flyerAssignments[].payoutRatePerKg, payoutAmount, paidOutAt
+ *     AND flyerAssignments[].categoryRates (per-category flyer rates added
+ *     2026-05-29 — same payout-side sensitivity as the legacy single rate)
+ *     AND flyerAssignments[].flyerWeightKg (denormalised flyer-side total,
+ *     added 2026-06-07 — assignment[] is never copied into the response at
+ *     all, so this is enforced by omission rather than per-field stripping)
+ *   - Strip items[].flyerRatePerPiece (per-piece flyer rate, added
+ *     2026-05-29 — lives on the item per Option A but is flyer-side
+ *     and never reaches the customer)
+ *   - Strip items[].flyerWeightKg (added 2026-06-07 — per-item flyer-side
+ *     kg override; the customer must not see what the flyer carried vs
+ *     what they were billed for)
+ *   - Strip items[].flyerPieceCount (added 2026-06-07 — per-item flyer-
+ *     side piece-count override; same reasoning as flyerWeightKg)
  *   - Strip totalPayout, profit
  *   - Customer: first name only
  *   - Flyer: first name + flight date + route only (no phone, no last name)
@@ -135,18 +148,53 @@ export const getTrackingOrder = onCall(
     const customerFirstName = customerName.split(' ')[0] || customerName;
 
     // --- Items: keep only customer-facing fields ---
-    // subtotal is the line price the customer paid; ratePerKg is the rate
-    // charged on this order for this category — both are revenue-side and
-    // already implied by the totals, so exposing them is informational not
-    // §11-forbidden. Payouts (payoutRatePerKg / payoutAmount), totalPayout
-    // and profit remain stripped.
-    const items = (order.items as Array<Record<string, unknown>> | undefined ?? []).map((it) => ({
-      description: String(it.description ?? ''),
-      categoryName: String(it.categoryName ?? ''),
-      weightKg: Number(it.weightKg ?? 0),
-      ratePerKg: Number(it.ratePerKg ?? 0),
-      subtotal: Number(it.subtotal ?? 0),
-    }));
+    // Revenue side (subtotal, ratePerKg / ratePerPiece, pieceCount,
+    // weightKg) is INFORMATIONAL — already implied by the totals, so
+    // exposing it is fine per §11.
+    //
+    // FLYER-SIDE fields remain STRIPPED (none of these appear in the
+    // returned shape — additive omission, no per-field delete needed):
+    //   - flyerRatePerPiece (added 2026-05-29) — per-piece flyer rate.
+    //   - flyerWeightKg (added 2026-06-07) — per-item flyer-side kg
+    //     override. Customer must not see what the flyer carried vs
+    //     what they were billed for.
+    //   - flyerPieceCount (added 2026-06-07) — per-item flyer-side
+    //     piece-count override; same reasoning.
+    //   - payoutRatePerKg / payoutAmount / categoryRates /
+    //     flyerWeightKg on the assignment (the entire assignment[]
+    //     is never copied to the response — only assignments[0].
+    //     flyerId is read for the carrier lookup).
+    //   - totalPayout, profit (omitted from the response shape).
+    //
+    // Per-piece additions are pricingMode (discriminator the client
+    // needs to render correctly) + pieceCount + ratePerPiece. Per-kg
+    // items return pricingMode=undefined; the client treats absent
+    // pricingMode as per_kg (matches the type default in src/types/
+    // index.ts).
+    const items = (order.items as Array<Record<string, unknown>> | undefined ?? []).map((it) => {
+      const mode = it.pricingMode === 'per_piece' ? 'per_piece' : 'per_kg';
+      const base = {
+        description: String(it.description ?? ''),
+        categoryName: String(it.categoryName ?? ''),
+        weightKg: Number(it.weightKg ?? 0),
+        ratePerKg: Number(it.ratePerKg ?? 0),
+        subtotal: Number(it.subtotal ?? 0),
+      };
+      if (mode === 'per_piece') {
+        return {
+          ...base,
+          pricingMode: 'per_piece' as const,
+          pieceCount: Number(it.pieceCount ?? 0),
+          ratePerPiece: Number(it.ratePerPiece ?? 0),
+          // flyerRatePerPiece, flyerWeightKg, flyerPieceCount:
+          // DELIBERATELY OMITTED — §11
+        };
+      }
+      // Per-kg item: omit pricingMode so the field stays undefined for
+      // legacy items too, preserving "absent === per_kg" semantics.
+      // flyerWeightKg + flyerPieceCount are also OMITTED here.
+      return base;
+    });
 
     // --- Payment proof: don't leak the image URL to non-uploaders ---
     // Spec keeps imageUrl off the public surface (it's reviewed by admin only).
@@ -187,6 +235,17 @@ export const getTrackingOrder = onCall(
       qrDataUri: qrDataUris[i] ?? null,
     }));
 
+    // --- Status / warehouse photos ---
+    // Pass-through of order.photos (an array of Storage download URLs the
+    // admin uploaded). Filter to strings + drop empties so a corrupt entry
+    // doesn't break the client gallery. The `/orders/{orderId}/photos/{file}`
+    // path is `allow read: if true` so the URLs work for unauthenticated
+    // tracking-page visitors. No additional sanitization needed — these
+    // images are explicitly intended for the customer to see.
+    const photos = Array.isArray(order.photos)
+      ? (order.photos as unknown[]).filter((u): u is string => typeof u === 'string' && u.length > 0)
+      : [];
+
     return {
       orderNumber: String(order.orderNumber ?? ''),
       trackingSlug: slug,
@@ -203,6 +262,7 @@ export const getTrackingOrder = onCall(
       paidAt: order.paymentApprovedAt ?? null,
       // Order creation date — public, customers want to see when they placed it.
       createdAt: order.createdAt ?? null,
+      photos,
       business: {
         name: String(settings.business?.name ?? 'PP Logistics'),
         tagline: settings.business?.tagline ?? undefined,

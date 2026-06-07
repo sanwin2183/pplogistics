@@ -28,10 +28,12 @@ import { MoneyDisplay } from '../../components/MoneyDisplay';
 import { fmtDate, fmtDateTime, fmtKg, fmtMoney } from '../../lib/formatters';
 import { trackingUrl } from '../../lib/tracking';
 import { storage } from '../../lib/firebase';
-import { nextOrderActionLabel, nextOrderStatus, ORDER_STATUS_LABELS } from '../../lib/status';
+import { nextOrderActionLabel, nextOrderStatus, ORDER_STATUS_LABELS, publicTimelineOverrides } from '../../lib/status';
 import { useOrder, useUpdateOrderStatus, useAddOrderPhoto, useDeleteOrder, useRejectPaymentProof } from './useOrders';
+import { useFlyer } from '../flyers/useFlyers';
 import { useSettings } from '../settings/useSettings';
 import { OrderStatusTimeline } from './OrderStatusTimeline';
+import { getFlyerPieceCount, getFlyerWeightKg } from './orderHelpers';
 import type { Order, PaymentProof } from '../../types';
 
 /**
@@ -91,6 +93,14 @@ export function OrderDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: order, isLoading } = useOrder(id);
+  // Look up the first-assigned flyer to derive the route — used to feed
+  // publicTimelineOverrides so the admin timeline shows the same "Arrived
+  // at <City>" copy customers see. Matches the precedent in
+  // getTrackingOrder which also uses assignments[0].flyerId as the
+  // canonical carrier for display. enabled gating in useFlyer keeps the
+  // query off until we have an id.
+  const firstFlyerId = order?.flyerAssignments[0]?.flyerId;
+  const { data: firstFlyer } = useFlyer(firstFlyerId);
   const { data: settings } = useSettings();
   const advance = useUpdateOrderStatus();
   const reject = useRejectPaymentProof();
@@ -453,11 +463,31 @@ export function OrderDetailPage() {
       <section>
         <h2 className="mb-3 h-eyebrow">Timeline</h2>
         <div className="card-soft p-5">
-          <OrderStatusTimeline status={order.status} history={order.statusHistory} />
+          {/* Same route-aware "Arrived at <City>" override the customer
+              tracking page uses — keeps the two views in sync. Falls back
+              to the default "In Transit" copy when no flyer is assigned
+              (firstFlyer undefined) or the route is unrecognised. The
+              underlying schema status stays in_transit; this is
+              display-only. */}
+          {(() => {
+            const overrides = publicTimelineOverrides(firstFlyer?.route);
+            return (
+              <OrderStatusTimeline
+                status={order.status}
+                history={order.statusHistory}
+                labelOverride={overrides.labels}
+                descriptionOverride={overrides.descriptions}
+              />
+            );
+          })()}
         </div>
       </section>
 
-      {/* Items */}
+      {/* Items — hybrid customer/flyer display per 2026-06-07 split.
+          When an item's flyer-side qty differs from customer-side, both
+          numbers render ("21kg billed (20kg flown)"); when they match
+          (the common case), the row collapses to a single value so the
+          UI doesn't churn for orders without overrides. */}
       <section>
         <h2 className="mb-3 h-eyebrow">Items</h2>
         <Card>
@@ -466,7 +496,27 @@ export function OrderDetailPage() {
               <div key={i} className="flex items-start justify-between gap-3 p-4">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium">{it.description}</div>
-                  <div className="text-xs text-muted-foreground">{it.categoryName} · {fmtKg(it.weightKg)} · {fmtMoney(it.ratePerKg)}/kg</div>
+                  <div className="text-xs text-muted-foreground">
+                    {it.pricingMode === 'per_piece' ? (
+                      <>
+                        {it.categoryName} · <ItemQtyHybrid
+                          customer={it.pieceCount ?? 0}
+                          flyer={getFlyerPieceCount(it)}
+                          unit="pcs"
+                          fmt={(n) => `${n} ${n === 1 ? 'piece' : 'pieces'}`}
+                        /> · {fmtMoney(it.ratePerPiece ?? 0)}/piece
+                      </>
+                    ) : (
+                      <>
+                        {it.categoryName} · <ItemQtyHybrid
+                          customer={it.weightKg}
+                          flyer={getFlyerWeightKg(it)}
+                          unit="kg"
+                          fmt={fmtKg}
+                        /> · {fmtMoney(it.ratePerKg)}/kg
+                      </>
+                    )}
+                  </div>
                 </div>
                 <MoneyDisplay amount={it.subtotal} className="text-sm font-medium" />
               </div>
@@ -487,25 +537,91 @@ export function OrderDetailPage() {
             {order.flyerAssignments.length === 0 ? (
               <div className="p-4 text-sm text-muted-foreground">No flyers assigned.</div>
             ) : (
-              order.flyerAssignments.map((a, i) => (
-                <div key={i} className="flex items-center justify-between gap-3 p-4">
-                  <Link to={`/flyers/${a.flyerId}`} className="flex min-w-0 items-center gap-2 hover:underline">
-                    <Plane className="h-4 w-4 text-muted-foreground" />
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">{a.flyerName}</div>
-                      <div className="text-xs text-muted-foreground">{fmtKg(a.weightKg)} · {fmtMoney(a.payoutRatePerKg)}/kg</div>
+              order.flyerAssignments.map((a, i) => {
+                const isLegacy = !a.categoryRates || a.categoryRates.length === 0;
+                // Per-category rows use FLYER kg post 2026-06-07 split —
+                // that's the basis the flyer is paid on. row.weightKg
+                // here is `Σ getFlyerWeightKg(items in category)`.
+                const categoryRows = !isLegacy
+                  ? a.categoryRates!.map((cr) => {
+                      const kg = order.items
+                        .filter((it) => it.categoryId === cr.categoryId)
+                        .reduce((s, it) => s + getFlyerWeightKg(it), 0);
+                      const categoryName =
+                        order.items.find((it) => it.categoryId === cr.categoryId)?.categoryName ?? cr.categoryId;
+                      return {
+                        categoryId: cr.categoryId,
+                        categoryName,
+                        weightKg: kg,
+                        ratePerKg: cr.ratePerKg,
+                        subtotal: kg * cr.ratePerKg,
+                      };
+                    })
+                  : [];
+                // Assignment header weight — FLYER kg (a.flyerWeightKg
+                // ?? a.weightKg). For legacy assignments this still
+                // shows a.weightKg via the fallback.
+                const flyerKg = a.flyerWeightKg ?? a.weightKg;
+                const customerKg = a.weightKg;
+                const showSplit = !isLegacy && Math.abs(flyerKg - customerKg) > 0.005;
+                return (
+                  <div key={i} className="space-y-3 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <Link to={`/flyers/${a.flyerId}`} className="flex min-w-0 items-center gap-2 hover:underline">
+                        <Plane className="h-4 w-4 text-muted-foreground" />
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium">{a.flyerName}</div>
+                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            {showSplit ? (
+                              <span>{fmtKg(flyerKg)} flown · {fmtKg(customerKg)} billed</span>
+                            ) : (
+                              <span>{fmtKg(flyerKg)}</span>
+                            )}
+                            {isLegacy && (
+                              <>
+                                <span>·</span>
+                                <span>{fmtMoney(a.payoutRatePerKg ?? 0)}/kg</span>
+                                <span className="rounded bg-muted px-1 py-px text-[10px] uppercase tracking-wider text-muted-foreground">
+                                  legacy rate
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </Link>
+                      <div className="flex items-center gap-2">
+                        <MoneyDisplay amount={a.payoutAmount} className="text-sm font-medium" />
+                        {a.paidOutAt && (
+                          <span className="status-pill bg-status-paid text-status-paid-fg">
+                            <Check className="h-3 w-3" /> Paid out
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </Link>
-                  <div className="flex items-center gap-2">
-                    <MoneyDisplay amount={a.payoutAmount} className="text-sm font-medium" />
-                    {a.paidOutAt && (
-                      <span className="status-pill bg-status-paid text-status-paid-fg">
-                        <Check className="h-3 w-3" /> Paid out
-                      </span>
+
+                    {/* Per-category breakdown — FLYER kg × rate. This
+                        is the paid-amount basis, not the billed-amount
+                        basis (the billed view is in the Items section
+                        above). */}
+                    {!isLegacy && categoryRows.length > 0 && (
+                      <div className="space-y-1 rounded-md bg-muted/30 px-3 py-2">
+                        {categoryRows.map((row) => (
+                          <div
+                            key={row.categoryId}
+                            className="grid grid-cols-[1fr_auto_auto] items-center gap-3 text-xs"
+                          >
+                            <span className="truncate text-muted-foreground">{row.categoryName}</span>
+                            <span className="tabular-nums text-muted-foreground">
+                              {fmtKg(row.weightKg)} · {fmtMoney(row.ratePerKg)}/kg
+                            </span>
+                            <span className="tabular-nums font-medium">{fmtMoney(row.subtotal)}</span>
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
             <div className="flex items-center justify-between p-4">
               <span className="text-sm text-muted-foreground">Profit</span>
@@ -634,6 +750,13 @@ export function OrderDetailPage() {
               This cannot be undone. The order will be removed and these rollups will be reversed:
             </p>
 
+            {/*
+              "Weight" line stays CUSTOMER (the order's billed mass —
+              what the customer paid for). The "Flyer" line + the
+              "capacity returned" sentence below switch to FLYER kg
+              (a.flyerWeightKg ?? a.weightKg) since that's what actually
+              gets subtracted from flyer.kgUsed by the delete transaction.
+            */}
             <dl className="space-y-1.5 rounded-lg border border-border bg-muted/40 p-3">
               <DeleteRow label="Customer" value={order.customerName} />
               <DeleteRow label="Total" value={fmtMoney(order.totalAmount)} />
@@ -643,36 +766,49 @@ export function OrderDetailPage() {
                 <DeleteRow
                   label={order.flyerAssignments.length === 1 ? 'Flyer' : 'Flyers'}
                   value={order.flyerAssignments
-                    .map((a) => `${a.flyerName} (${fmtKg(a.weightKg)})`)
+                    .map((a) => `${a.flyerName} (${fmtKg(a.flyerWeightKg ?? a.weightKg)})`)
                     .join(', ')}
                 />
               )}
             </dl>
 
-            {order.status === 'paid' ? (
-              <div className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/10 p-3">
-                <p className="font-medium text-destructive">This order is PAID.</p>
-                <p className="text-xs text-destructive/90">
-                  Deleting it will reduce <span className="font-medium">{order.customerName}</span>
-                  &apos;s total spent by{' '}
-                  <span className="font-medium tabular-nums">{fmtMoney(order.totalAmount)}</span> and
-                  return {fmtKg(order.totalWeightKg)} of flyer capacity. Confirm only if this was
-                  recorded in error.
+            {/* "Capacity returned" message uses the SAME source as
+                useDeleteOrder's kgUsed delta — flyerWeightKg ?? weightKg
+                summed across assignments — so the message matches what
+                actually happens to the rollup. */}
+            {(() => {
+              const flyerCapReturned = order.flyerAssignments.reduce(
+                (s, a) => s + (a.flyerWeightKg ?? a.weightKg),
+                0,
+              );
+              if (order.status === 'paid') {
+                return (
+                  <div className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/10 p-3">
+                    <p className="font-medium text-destructive">This order is PAID.</p>
+                    <p className="text-xs text-destructive/90">
+                      Deleting it will reduce <span className="font-medium">{order.customerName}</span>
+                      &apos;s total spent by{' '}
+                      <span className="font-medium tabular-nums">{fmtMoney(order.totalAmount)}</span>
+                      {order.flyerAssignments.length > 0 && (
+                        <> and return {fmtKg(flyerCapReturned)} of flyer capacity</>
+                      )}
+                      . Confirm only if this was recorded in error.
+                    </p>
+                  </div>
+                );
+              }
+              return (
+                <p className="text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">{order.customerName}</span>&apos;s
+                  outstanding balance will decrease by{' '}
+                  <span className="font-medium tabular-nums text-foreground">{fmtMoney(order.totalAmount)}</span>
+                  {order.flyerAssignments.length > 0 && (
+                    <>, and {fmtKg(flyerCapReturned)} of flyer capacity will be returned</>
+                  )}
+                  .
                 </p>
-              </div>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">{order.customerName}</span>&apos;s
-                outstanding balance will decrease by{' '}
-                <span className="font-medium tabular-nums text-foreground">{fmtMoney(order.totalAmount)}</span>
-                {order.flyerAssignments.length > 0 && (
-                  <>
-                    , and {fmtKg(order.totalWeightKg)} of flyer capacity will be returned
-                  </>
-                )}
-                .
-              </p>
-            )}
+              );
+            })()}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteOpen(false)}>Cancel</Button>
@@ -683,6 +819,37 @@ export function OrderDetailPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/**
+ * Customer-vs-flyer qty renderer for the Items section. Shows BOTH when
+ * the two values differ (e.g. "21 kg billed (20 kg flown)"), collapses
+ * to a single value when they match — the common case before any
+ * flyer-side override is set.
+ *
+ * Used only on the admin order detail page; customer-facing surfaces
+ * (Invoice/Receipt) never show flyer-side data per §11.
+ */
+function ItemQtyHybrid({
+  customer,
+  flyer,
+  unit: _unit,
+  fmt,
+}: {
+  customer: number;
+  flyer: number;
+  unit: string;
+  fmt: (n: number) => string;
+}) {
+  const epsilon = _unit === 'kg' ? 0.005 : 0.5; // 0.5 piece tolerance for ints
+  if (Math.abs(customer - flyer) < epsilon) {
+    return <>{fmt(customer)}</>;
+  }
+  return (
+    <>
+      {fmt(customer)} billed <span className="text-muted-foreground">({fmt(flyer)} flown)</span>
+    </>
   );
 }
 

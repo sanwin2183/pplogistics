@@ -1,6 +1,7 @@
 import Papa from 'papaparse';
 import dayjs from 'dayjs';
 import { toDate } from '../../lib/formatters';
+import { getFlyerPieceCount, getFlyerWeightKg } from '../orders/orderHelpers';
 import type {
   Order,
   Customer,
@@ -102,10 +103,24 @@ function orderPayoutStatus(assignments: FlyerAssignment[]): string {
   return 'partial';
 }
 
-/** Serialise an array of OrderItems into a single readable cell. */
+/**
+ * Serialise an array of OrderItems into a single readable cell.
+ *
+ * Mode-aware (added 2026-05-29):
+ *   per_kg    → "{desc} ({kg}kg @ {ratePerKg} THB/kg = {subtotal})"
+ *   per_piece → "{desc} ({count} pcs @ {ratePerPiece} THB/pc = {subtotal})"
+ *
+ * Legacy items with absent pricingMode read as per_kg via the helper.
+ * subtotal is trusted stored money for both modes — no recomputation.
+ */
 function summariseItems(items: Order['items']): string {
   return items
-    .map((it) => `${it.description} (${it.weightKg}kg @ ${it.ratePerKg} THB/kg = ${it.subtotal})`)
+    .map((it) => {
+      if (it.pricingMode === 'per_piece') {
+        return `${it.description} (${it.pieceCount ?? 0} pcs @ ${it.ratePerPiece ?? 0} THB/pc = ${it.subtotal})`;
+      }
+      return `${it.description} (${it.weightKg}kg @ ${it.ratePerKg} THB/kg = ${it.subtotal})`;
+    })
     .join(MULTI_SEP);
 }
 
@@ -259,6 +274,64 @@ export function flyerPayoutsToCsv(orders: Order[], flyers: Flyer[]): string {
   for (const o of orders) {
     for (const a of o.flyerAssignments) {
       const flyer = flyerById.get(a.flyerId);
+      // Rate-shape distinction so legacy + new assignments coexist in one CSV:
+      //   LEGACY (`categoryRates` absent/empty): `payout_rate_per_kg` carries
+      //     the single flat rate. New rate-effective + breakdown columns blank.
+      //   NEW (`categoryRates` populated): per-category rates can differ, so a
+      //     single "rate" doesn't exist. `payout_rate_per_kg_effective` holds
+      //     the blended rate (payoutAmount / weightKg) — what the flyer earned
+      //     per kg averaged across categories. `category_rate_breakdown` is the
+      //     per-category detail string `<categoryName>:<kg>kg@<rate>` joined
+      //     with " | " for spreadsheet-side splitting.
+      //
+      // PER-PIECE (2026-05-29) + FLYER-QTY SPLIT (2026-06-07): every
+      // payout figure on THIS row uses flyer-side quantities. The
+      // assignment is a payout — what the FLYER was paid on, not what
+      // the customer was billed. Customer-side aggregates live on
+      // ordersToCsv instead.
+      //
+      // weight_kg                       → assignment's flyer total
+      //                                  (a.flyerWeightKg ?? a.weightKg)
+      // payout_rate_per_kg_effective    → payoutAmount / flyerWeight
+      //                                  ("฿ paid per kg actually flown")
+      // category_rate_breakdown         → per-category kg uses
+      //                                  getFlyerWeightKg(it)
+      // piece_rate_breakdown            → per-piece count uses
+      //                                  getFlyerPieceCount(it)
+      // amount_thb                      → unchanged (assignment.payoutAmount
+      //                                  was written at submit with both
+      //                                  per-kg + per-piece contributions
+      //                                  on FLYER quantities)
+      //
+      // Effective-rate divide-by-zero guard: piece-only assignments
+      // have flyerWeight=0 → blank instead of Inf/NaN. Also blank when
+      // categoryRates is absent (legacy single-rate column carries the
+      // rate directly).
+      const hasCategoryRates = !!a.categoryRates && a.categoryRates.length > 0;
+      const flyerWeightKg = a.flyerWeightKg ?? a.weightKg;
+      const effectiveRate =
+        hasCategoryRates && flyerWeightKg > 0
+          ? +(a.payoutAmount / flyerWeightKg).toFixed(2)
+          : null;
+      const categoryBreakdown = hasCategoryRates
+        ? a.categoryRates!
+            .map((cr) => {
+              const kg = o.items
+                .filter((it) => it.categoryId === cr.categoryId && it.pricingMode !== 'per_piece')
+                .reduce((s, it) => s + getFlyerWeightKg(it), 0);
+              const name =
+                o.items.find((it) => it.categoryId === cr.categoryId)?.categoryName ?? cr.categoryId;
+              return `${name}:${kg}kg@${cr.ratePerKg}`;
+            })
+            .join(MULTI_SEP)
+        : '';
+      const pieceBreakdown = o.items
+        .filter((it) => it.pricingMode === 'per_piece')
+        .map((it) => {
+          const name = it.description || it.categoryName;
+          return `${name}:${getFlyerPieceCount(it)}pcs@${it.flyerRatePerPiece ?? 0}`;
+        })
+        .join(MULTI_SEP);
       rows.push({
         payout_id: `${o.id}:${a.flyerId}`,
         flyer_id: a.flyerId,
@@ -269,8 +342,11 @@ export function flyerPayoutsToCsv(orders: Order[], flyers: Flyer[]): string {
         order_number: o.orderNumber,
         order_status: o.status,
         order_created_at: fmtIso(o.createdAt),
-        weight_kg: fmtNum(a.weightKg),
-        payout_rate_per_kg: fmtNum(a.payoutRatePerKg),
+        weight_kg: fmtNum(flyerWeightKg),
+        payout_rate_per_kg: hasCategoryRates ? '' : fmtNum(a.payoutRatePerKg ?? null),
+        payout_rate_per_kg_effective: effectiveRate == null ? '' : fmtNum(effectiveRate),
+        category_rate_breakdown: categoryBreakdown,
+        piece_rate_breakdown: pieceBreakdown,
         amount_thb: fmtNum(a.payoutAmount),
         paid_at: fmtIso(a.paidOutAt),
         status: a.paidOutAt ? 'paid' : 'owed',

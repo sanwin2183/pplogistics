@@ -109,13 +109,19 @@ async function main(): Promise<void> {
       }
     }
 
-    // Flyer side — sum every assignment's weightKg into its flyer's bucket.
+    // Flyer side — sum every assignment's FLYER-side kg into its
+    // flyer's bucket. Post 2026-06-07 split: source is flyerWeightKg
+    // (denormalised flyer-side total set by the form at submit),
+    // falling back to weightKg for legacy assignments where the new
+    // field is absent. Must match the read used by useCreateOrder /
+    // useDeleteOrder so this recompute lands on the same number.
     const assignments: Array<Record<string, unknown>> = Array.isArray(o.flyerAssignments)
       ? (o.flyerAssignments as Array<Record<string, unknown>>)
       : [];
     for (const a of assignments) {
       const flyerId = String(a.flyerId ?? '');
-      const kg = Number(a.weightKg ?? 0);
+      const flyerKg =
+        a.flyerWeightKg != null ? Number(a.flyerWeightKg) : Number(a.weightKg ?? 0);
       if (!flyerId) continue;
       if (!flyerTargets.has(flyerId)) {
         console.warn(
@@ -123,7 +129,7 @@ async function main(): Promise<void> {
         );
         continue;
       }
-      flyerTargets.set(flyerId, (flyerTargets.get(flyerId) ?? 0) + kg);
+      flyerTargets.set(flyerId, (flyerTargets.get(flyerId) ?? 0) + flyerKg);
     }
   }
 

@@ -57,6 +57,27 @@ export function useOrdersByFlyer(flyerId: string | undefined) {
     queryKey: [...KEY, 'byFlyer', flyerId],
     // Firestore can't query nested array-of-object fields by inner key efficiently
     // without an index hack, so we filter client-side. Volume here is low.
+    //
+    // Freshness override (not inherited from the global QueryClient defaults
+    // in main.tsx):
+    //   - refetchOnMount: 'always' — re-query Firestore EVERY time the flyer
+    //     detail page mounts, regardless of the 30 s staleTime. Without
+    //     this, deleting an order from /orders/<id> then navigating to
+    //     /flyers/<id> within 30 s would render the still-cached array
+    //     (the deleted order would appear to "linger" in trip cards + the
+    //     saved summary image). Invalidation from useDeleteOrder.onSuccess
+    //     marks the data stale; 'always' guarantees the refetch fires on
+    //     mount instead of waiting for the global staleTime to expire.
+    //   - refetchOnWindowFocus: true — covers the cross-tab case (delete in
+    //     a different tab; flyer tab regains focus → refetch). The global
+    //     default is false (set on the QueryClient to avoid distraction on
+    //     casual focus changes); for the payout view, fresh-on-focus is the
+    //     RIGHT trade-off because the page drives a money decision.
+    //
+    // staleTime stays inherited (30 s). With 'always' on mount it doesn't
+    // hurt — every navigation already triggers a fresh fetch.
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
     queryFn: async () => {
       const all = await fetchCol<Order>('orders', orderBy('createdAt', 'desc'));
       return all.filter((o) => o.flyerAssignments.some((a) => a.flyerId === flyerId));
@@ -131,11 +152,17 @@ export function useCreateOrder() {
         ]);
 
         // ---- Phase 2: compute ----
-        // Sum the kg assigned to each flyer in this order (collapses the
-        // multi-row-same-flyer case into one delta per flyer).
+        // Sum the FLYER-side kg assigned to each flyer in this order
+        // (collapses multi-row-same-flyer case into one delta). Post
+        // 2026-06-07 split: source is `assignment.flyerWeightKg` (the
+        // denormalised flyer-side total written by the form), falling
+        // back to `assignment.weightKg` for legacy assignments (pre-
+        // split) where flyerWeightKg is absent. Customer kg lives in
+        // `a.weightKg` and is no longer used for capacity.
         const kgByFlyer = new Map<string, number>();
         for (const a of input.flyerAssignments) {
-          kgByFlyer.set(a.flyerId, (kgByFlyer.get(a.flyerId) ?? 0) + a.weightKg);
+          const flyerKg = a.flyerWeightKg ?? a.weightKg;
+          kgByFlyer.set(a.flyerId, (kgByFlyer.get(a.flyerId) ?? 0) + flyerKg);
         }
 
         // ---- Phase 3: writes ----
@@ -352,11 +379,13 @@ export function useDeleteOrder() {
         ]);
 
         // ---- Phase 2: compute ----
-        // Sum kg per unique flyer — collapses the same-flyer-in-multiple-
-        // rows case into one delta per flyer (matches the create math).
+        // Sum FLYER-side kg per unique flyer — must mirror the create
+        // math byte-for-byte so create + delete stay symmetric. Same
+        // fallback to a.weightKg for legacy (pre 2026-06-07) assignments.
         const kgByFlyer = new Map<string, number>();
         for (const a of order.flyerAssignments) {
-          kgByFlyer.set(a.flyerId, (kgByFlyer.get(a.flyerId) ?? 0) + a.weightKg);
+          const flyerKg = a.flyerWeightKg ?? a.weightKg;
+          kgByFlyer.set(a.flyerId, (kgByFlyer.get(a.flyerId) ?? 0) + flyerKg);
         }
 
         // ---- Phase 3: writes ----

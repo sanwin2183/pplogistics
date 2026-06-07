@@ -5,3 +5,4 @@ initializeApp();
 
 export { getTrackingOrder } from './getTrackingOrder';
 export { submitPaymentProof } from './submitPaymentProof';
+export { markTripPaid } from './markTripPaid';

@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { Image as ImageIcon, Package, Printer } from 'lucide-react';
 import { Button } from '../../components/ui/button';
+import { MoneyAmount } from '../../components/MoneyDisplay';
 import { Spinner } from '../../components/Spinner';
 import { fmtDate, fmtKg, fmtMoney } from '../../lib/formatters';
 import { ORDER_STATUS_LABELS } from '../../lib/status';
@@ -139,39 +140,73 @@ function InvoiceBody({ order, mode }: { order: PublicOrder; mode: 'screen' | 'a4
         </div>
       </div>
 
-      {/* Line-items table */}
+      {/* Line-items table — Qty column shows "X kg" for per-kg items
+          and "X pcs" for per-piece items; Rate column shows ฿/kg or
+          ฿/piece accordingly. Subtotal is the same stored money number
+          for both modes.
+
+          Layout: ONE outer grid spans the header + every item row, with
+          each row wrapper using `display: contents` so its four cells
+          land directly in the parent grid. Result: a single column
+          width per column applies to header + every row, so values
+          align on a clean right edge regardless of whether a row shows
+          "50 kg" or "15 pcs", "฿350" or "฿58/pc", "฿2,500" or "฿17,500".
+          Numeric columns are pinned to fixed rem widths sized to the
+          worst-case content; the Item column flexes (minmax(0,1fr)) and
+          truncates if needed. Borders attach to each cell so the
+          horizontal rule between rows runs across all four columns. */}
       <div className="overflow-hidden rounded-lg border border-border">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-3 bg-secondary px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          <span>Item</span>
-          <span className="text-right">Weight</span>
-          <span className="text-right">Rate</span>
-          <span className="text-right">Total</span>
+        <div className="grid grid-cols-[minmax(0,1fr)_3.5rem_4.75rem_5.5rem]">
+          {/* Header row — same grid columns as every data row below. */}
+          <div className="bg-secondary px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Item</div>
+          <div className="bg-secondary px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Qty</div>
+          <div className="bg-secondary px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Rate</div>
+          <div className="bg-secondary px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Total</div>
+
+          {order.items.map((it, i) => {
+            const isPiece = it.pricingMode === 'per_piece';
+            return (
+              // display:contents — row wrapper participates only for
+              // React's key/reconciliation; its children become direct
+              // grid children of the table grid above.
+              <div key={i} className="contents">
+                <div className="min-w-0 border-t border-border px-3 py-2.5">
+                  <div className="truncate text-sm font-medium">{it.description}</div>
+                  <div className="truncate text-xs text-muted-foreground">{it.categoryName}</div>
+                </div>
+                <div className="flex items-center justify-end border-t border-border px-3 py-2.5 text-right text-xs tabular-nums">
+                  {isPiece ? `${it.pieceCount ?? 0} pcs` : fmtKg(it.weightKg)}
+                </div>
+                <div className="flex items-center justify-end border-t border-border px-3 py-2.5 text-right text-xs tabular-nums">
+                  {isPiece ? (
+                    <MoneyAmount amount={it.ratePerPiece ?? 0} unit="pc" />
+                  ) : (
+                    <MoneyAmount amount={it.ratePerKg} />
+                  )}
+                </div>
+                <div className="flex items-center justify-end border-t border-border px-3 py-2.5 text-right text-sm font-medium tabular-nums">
+                  <MoneyAmount amount={it.subtotal} />
+                </div>
+              </div>
+            );
+          })}
         </div>
-        {order.items.map((it, i) => (
-          <div
-            key={i}
-            className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-3 border-t border-border px-3 py-2.5"
-          >
-            <div className="min-w-0">
-              <div className="truncate text-sm font-medium">{it.description}</div>
-              <div className="truncate text-xs text-muted-foreground">{it.categoryName}</div>
-            </div>
-            <span className="self-center text-right text-xs tabular-nums">{fmtKg(it.weightKg)}</span>
-            <span className="self-center text-right text-xs tabular-nums">{fmtMoney(it.ratePerKg)}</span>
-            <span className="self-center text-right text-sm font-medium tabular-nums">{fmtMoney(it.subtotal)}</span>
-          </div>
-        ))}
       </div>
 
-      {/* Totals — small weight line above the prominent amount-due billboard */}
+      {/* Totals — show a weight line ONLY when some items are per-kg
+          (per-piece items have weightKg=0 and don't contribute). For a
+          piece-only order, the weight line is omitted entirely so the
+          customer doesn't see "Total weight 0 kg". */}
       <div className="space-y-2">
-        <div className="flex justify-between text-xs text-muted-foreground">
-          <span>Total weight</span>
-          <span className="tabular-nums">{fmtKg(order.totalWeightKg)}</span>
-        </div>
+        {order.totalWeightKg > 0 && (
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>Total weight</span>
+            <span className="tabular-nums">{fmtKg(order.totalWeightKg)}</span>
+          </div>
+        )}
         <div className="flex items-baseline justify-between border-t border-border pt-3">
           <span className="text-sm font-medium">Total amount due</span>
-          <span className="text-2xl font-semibold tabular-nums">{fmtMoney(order.totalAmount)}</span>
+          <MoneyAmount amount={order.totalAmount} className="text-2xl font-semibold" />
         </div>
       </div>
 

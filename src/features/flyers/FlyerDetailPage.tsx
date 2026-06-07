@@ -1,77 +1,80 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
   Pencil,
   Phone,
   Plane,
-  Check,
   Trash2,
   Package,
 } from 'lucide-react';
-import { doc, serverTimestamp, Timestamp, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { toast } from 'sonner';
-import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '../../components/ui/button';
 import { Progress } from '../../components/ui/progress';
 import { Skeleton } from '../../components/ui/skeleton';
 import { FullPageSpinner } from '../../components/Spinner';
 import { FlyerStatusBadge, OrderStatusBadge } from '../../components/StatusBadge';
-import { MoneyDisplay } from '../../components/MoneyDisplay';
+import { Card, CardContent } from '../../components/ui/card';
 import { fmtDate, fmtDateTime, fmtKg, fmtMoney } from '../../lib/formatters';
 import { ROUTE_LABELS } from '../../lib/status';
-import { db } from '../../lib/firebase';
 import { FlyerFormSheet } from './FlyerFormSheet';
 import { useFlyer, useDeleteFlyer } from './useFlyers';
 import { useOrdersByFlyer } from '../orders/useOrders';
-import type { FlyerAssignment } from '../../types';
+import {
+  categorizeTrip,
+  groupOrdersIntoTrips,
+  type CategorizedTrip,
+} from './tripHelpers';
+import { TripCard } from './TripCard';
 
+/**
+ * Flyer detail page — redesigned around trips.
+ *
+ * Section layout:
+ *   1. Flyer profile (name, route, flight, capacity used)
+ *   2. Upcoming trips — trips where every order is still pending /
+ *      received (not yet handed to the flyer). No payout total, no actions.
+ *   3. Payable trips — at least one eligible order, not all paid.
+ *      Expanded by default, with Save / Mark trip paid.
+ *   4. Paid trips — all eligible orders paidOutAt. Collapsed by default,
+ *      with Save receipt / Unmark.
+ *
+ * In the current schema each flyer doc IS a trip (route + flightDate are
+ * on the flyer record, not the assignment), so a flyer page will show at
+ * most ONE trip card across the three sections — the trip lands in
+ * exactly one section based on aggregate state. The section layout still
+ * makes sense for that one trip and scales cleanly if a future
+ * "trips overview" page is added.
+ *
+ * Capacity rollup at the top stays as-is — that's per-flyer-doc kg used
+ * vs available and isn't affected by the trip grouping.
+ */
 export function FlyerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { data: flyer, isLoading } = useFlyer(id);
   const { data: orders } = useOrdersByFlyer(id);
   const [editing, setEditing] = useState(false);
   const del = useDeleteFlyer();
-  const qc = useQueryClient();
+
+  // Group + categorise the orders into trips. flyerLookup is a one-element
+  // map for the current flyer doc. If `orders` is undefined (still loading)
+  // we render nothing trip-related; the profile + skeleton handle that.
+  const categorized: CategorizedTrip[] = useMemo(() => {
+    if (!flyer || !orders) return [];
+    const lookup = new Map([[flyer.id, flyer]]);
+    return groupOrdersIntoTrips(orders, lookup).map(categorizeTrip);
+  }, [flyer, orders]);
+
+  const upcomingTrips = categorized.filter((c) => c.section === 'upcoming');
+  const payableTrips = categorized.filter((c) => c.section === 'payable');
+  const paidTrips = categorized.filter((c) => c.section === 'paid');
 
   if (isLoading) return <FullPageSpinner />;
   if (!flyer) return <p className="text-sm text-muted-foreground">Flyer not found.</p>;
 
-  const usedPct = flyer.kgAvailable > 0 ? Math.min(100, (flyer.kgUsed / flyer.kgAvailable) * 100) : 0;
-
-  // Compute payout owed (orders paid by customer but not yet paid out).
-  let owed = 0;
-  let paidOut = 0;
-  orders?.forEach((o) => {
-    o.flyerAssignments
-      .filter((a) => a.flyerId === flyer.id)
-      .forEach((a) => {
-        if (a.paidOutAt) paidOut += a.payoutAmount;
-        else if (o.status === 'paid') owed += a.payoutAmount;
-      });
-  });
-
-  async function togglePayout(orderId: string, assignment: FlyerAssignment) {
-    if (!flyer) return;
-    try {
-      const ref = doc(db, 'orders', orderId);
-      // Replace the matching assignment with one having paidOutAt set (or unset).
-      const updated: FlyerAssignment = { ...assignment, paidOutAt: assignment.paidOutAt ? undefined : Timestamp.now() };
-      // Remove the old one and add the new — arrayUnion/Remove rely on deep equality, which works for plain objects.
-      await updateDoc(ref, {
-        flyerAssignments: arrayRemove(assignment),
-        updatedAt: serverTimestamp(),
-      });
-      await updateDoc(ref, {
-        flyerAssignments: arrayUnion(updated),
-        updatedAt: serverTimestamp(),
-      });
-      toast.success(assignment.paidOutAt ? 'Payout reversed' : 'Marked paid out');
-      qc.invalidateQueries({ queryKey: ['orders'] });
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed');
-    }
-  }
+  const usedPct = flyer.kgAvailable > 0
+    ? Math.min(100, (flyer.kgUsed / flyer.kgAvailable) * 100)
+    : 0;
 
   return (
     <div className="space-y-6">
@@ -79,6 +82,7 @@ export function FlyerDetailPage() {
         <Link to="/flyers"><ArrowLeft /> All flyers</Link>
       </Button>
 
+      {/* Flyer profile */}
       <div className="card-soft p-6">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -129,72 +133,93 @@ export function FlyerDetailPage() {
         )}
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
-        <Stat label="Pay rate" value={`${fmtMoney(flyer.ratePerKg)}/kg`} />
-        <Stat label="Owed to flyer" value={fmtMoney(owed)} tone={owed > 0 ? 'warn' : undefined} />
-        <Stat label="Paid out" value={fmtMoney(paidOut)} />
-      </div>
+      {/* Trips — three sections, each conditional on having trips in it */}
+      {orders === undefined ? (
+        <Skeleton className="h-24 w-full" />
+      ) : categorized.length === 0 ? (
+        <div className="card-soft py-8 text-center text-sm text-muted-foreground">
+          No assigned orders yet.
+        </div>
+      ) : (
+        <>
+          {/* Upcoming */}
+          {upcomingTrips.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="h-eyebrow">Upcoming</h2>
+              {upcomingTrips.map((c) => (
+                <UpcomingTripCard key={c.trip.key} categorized={c} />
+              ))}
+            </section>
+          )}
 
-      <div>
-        <h2 className="mb-3 h-eyebrow">Assigned orders</h2>
-        {orders === undefined ? (
-          <Skeleton className="h-24 w-full" />
-        ) : !orders.length ? (
-          <div className="card-soft py-8 text-center text-sm text-muted-foreground">No assigned orders yet.</div>
-        ) : (
-          <div className="card-soft divide-y divide-border">
-            {orders.map((o) => {
-              const assignments = o.flyerAssignments.filter((a) => a.flyerId === flyer.id);
-              return assignments.map((a) => (
-                <div key={`${o.id}-${a.weightKg}`} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-                  <Link to={`/orders/${o.id}`} className="flex items-center gap-3 min-w-0">
-                    <Package className="h-4 w-4 text-muted-foreground shrink-0" />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <div className="text-sm font-medium">#{o.orderNumber}</div>
-                        <OrderStatusBadge status={o.status} />
-                      </div>
-                      <div className="mt-0.5 text-xs text-muted-foreground">
-                        {fmtKg(a.weightKg)} · {fmtMoney(a.payoutRatePerKg)}/kg · {fmtDate(o.createdAt)}
-                      </div>
-                    </div>
-                  </Link>
-                  <div className="flex items-center justify-between gap-3 sm:justify-end">
-                    <MoneyDisplay amount={a.payoutAmount} className="text-sm font-medium" />
-                    {a.paidOutAt ? (
-                      <span className="status-pill bg-status-paid text-status-paid-fg">
-                        <Check className="h-3 w-3" /> Paid out
-                      </span>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={o.status !== 'paid'}
-                        onClick={() => togglePayout(o.id, a)}
-                      >
-                        Mark paid out
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ));
-            })}
-          </div>
-        )}
-      </div>
+          {/* Payable */}
+          {payableTrips.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="h-eyebrow">Payable</h2>
+              {payableTrips.map((c) => (
+                <TripCard key={c.trip.key} categorized={c} mode="payable" />
+              ))}
+            </section>
+          )}
+
+          {/* Paid */}
+          {paidTrips.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="h-eyebrow">Paid</h2>
+              {paidTrips.map((c) => (
+                <TripCard key={c.trip.key} categorized={c} mode="paid" />
+              ))}
+            </section>
+          )}
+        </>
+      )}
 
       <FlyerFormSheet open={editing} flyer={flyer} onClose={() => setEditing(false)} />
     </div>
   );
 }
 
-function Stat({ label, value, tone }: { label: string; value: string; tone?: 'warn' }) {
+/**
+ * Minimal card for the Upcoming section — no payout total, no actions.
+ * Lists the upcoming orders so the owner can see what's queued. Once an
+ * order's status advances to with_flyer (or later) the trip re-categorises
+ * to Payable on next render — handover is the trigger, not takeoff.
+ */
+function UpcomingTripCard({ categorized }: { categorized: CategorizedTrip }) {
+  const { trip, upcomingOrders } = categorized;
   return (
-    <div className="card-soft p-4">
-      <div className="h-eyebrow">{label}</div>
-      <div className={`mt-1.5 text-lg font-semibold tabular-nums ${tone === 'warn' ? 'text-status-awaiting-fg' : ''}`}>
-        {value}
-      </div>
-    </div>
+    <Card>
+      <CardContent className="p-0">
+        <div className="flex items-center gap-3 border-b border-border p-4">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium">{ROUTE_LABELS[trip.route]}</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">{fmtDateTime(trip.flightDate)}</div>
+          </div>
+          <div className="shrink-0 text-right text-xs text-muted-foreground">
+            {upcomingOrders.length} order{upcomingOrders.length === 1 ? '' : 's'}
+          </div>
+        </div>
+        <div className="divide-y divide-border">
+          {upcomingOrders.map((o) => (
+            <Link
+              key={o.id}
+              to={`/orders/${o.id}`}
+              className="flex items-center gap-3 p-3 hover:bg-muted/40"
+            >
+              <Package className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">#{o.orderNumber}</span>
+                  <OrderStatusBadge status={o.status} />
+                </div>
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  {fmtKg(o.totalWeightKg)} · {fmtDate(o.createdAt)} · {fmtMoney(o.totalAmount)}
+                </div>
+              </div>
+            </Link>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

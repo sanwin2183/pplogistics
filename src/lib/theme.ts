@@ -67,12 +67,52 @@ export const useTheme = create<ThemeStore>((set, get) => {
 
 /** Theme-aware colour tokens for Recharts (which can't consume CSS variables natively). */
 export function chartTokens(resolved: Resolved) {
+  const dark = resolved === 'dark';
   return {
-    primary: resolved === 'dark' ? 'hsl(173 65% 50%)' : 'hsl(173 80% 26%)',
-    grid: resolved === 'dark' ? 'hsl(220 13% 20%)' : 'hsl(220 13% 91%)',
-    axisText: resolved === 'dark' ? 'hsl(220 9% 65%)' : 'hsl(220 9% 46%)',
-    tooltipBg: resolved === 'dark' ? 'hsl(220 14% 13%)' : 'hsl(0 0% 100%)',
-    tooltipBorder: resolved === 'dark' ? 'hsl(220 13% 22%)' : 'hsl(220 13% 91%)',
-    tooltipText: resolved === 'dark' ? 'hsl(220 13% 90%)' : 'hsl(220 14% 11%)',
+    primary: dark ? 'hsl(173 65% 50%)' : 'hsl(173 80% 26%)',
+    grid: dark ? 'hsl(220 13% 20%)' : 'hsl(220 13% 91%)',
+    axisText: dark ? 'hsl(220 9% 65%)' : 'hsl(220 9% 46%)',
+    tooltipBg: dark ? 'hsl(220 14% 13%)' : 'hsl(0 0% 100%)',
+    tooltipBorder: dark ? 'hsl(220 13% 22%)' : 'hsl(220 13% 91%)',
+    tooltipText: dark ? 'hsl(220 13% 90%)' : 'hsl(220 14% 11%)',
+    /**
+     * Multi-series palette for pies, stacked bars, etc. Anchored on the
+     * brand emerald (--primary) with hue rotation around the wheel
+     * picking complementary mid-saturation tones. Each pair uses the
+     * SAME hue across light/dark so the slice for "Clothes" stays
+     * recognisably teal in both modes; only L (and slightly S) shift
+     * to maintain contrast. Order is deliberate — most-used slices get
+     * the highest-contrast (primary-adjacent) hues; less-used slices
+     * fall back to muted tones that still read on a small mobile pie.
+     *
+     * Recharts cycles colours from this array via index — callers should
+     * use `palette[i % palette.length]` so we never crash on >palette.length
+     * categories.
+     */
+    palette: dark
+      ? [
+          'hsl(173 65% 55%)', // teal — brand
+          'hsl(43 85% 60%)',  // amber
+          'hsl(220 70% 65%)', // sky
+          'hsl(330 65% 65%)', // rose
+          'hsl(265 60% 70%)', // violet
+          'hsl(15 75% 65%)',  // orange
+          'hsl(140 50% 55%)', // green
+          'hsl(195 65% 60%)', // cyan
+        ]
+      : [
+          'hsl(173 75% 32%)',
+          'hsl(38 90% 48%)',
+          'hsl(220 75% 50%)',
+          'hsl(335 70% 50%)',
+          'hsl(265 60% 55%)',
+          'hsl(15 80% 50%)',
+          'hsl(142 60% 38%)',
+          'hsl(195 75% 42%)',
+        ],
+    // Secondary tones for the revenue/cost/profit grouped chart so
+    // cost and profit don't visually clash with the primary line.
+    cost: dark ? 'hsl(15 75% 60%)' : 'hsl(15 80% 50%)',
+    profit: dark ? 'hsl(140 50% 55%)' : 'hsl(142 60% 38%)',
   };
 }

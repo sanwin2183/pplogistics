@@ -22,9 +22,29 @@ import { useCategories } from '../categories/useCategories';
 import { useUpcomingFlyers } from '../flyers/useFlyers';
 import { useSettings } from '../settings/useSettings';
 import { useCreateOrder } from './useOrders';
+import {
+  calcTotalFlyerWeight,
+  getFlyerPieceCount,
+  groupItemsByCategory,
+  groupItemsByCategoryFlyerKg,
+} from './orderHelpers';
 import { CustomerFormSheet } from '../customers/CustomerFormSheet';
 import { firstFieldError, type FieldErrorHit } from '../../lib/forms';
+import type { OrderItem } from '../../types';
 import dayjs from 'dayjs';
+
+/** Drop keys whose value is `undefined`. Firebase SDK v11 rejects
+ *  writes that contain literal `undefined` field values (CLAUDE.md
+ *  §10), and optional schema fields (pieceCount, ratePerPiece,
+ *  flyerWeightKg, flyerPieceCount, flyerRatePerPiece) all land as
+ *  undefined when not applicable to the current item. */
+function omitUndefined<T extends object>(o: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(o)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out as T;
+}
 
 // Field-named validation messages.
 //
@@ -34,20 +54,82 @@ import dayjs from 'dayjs';
 // the failing field is called, so both the toast and the inline error stay
 // in sync — and any walker (see firstFieldError in lib/forms) can surface
 // them verbatim.
-const itemSchema = z.object({
-  description: z.string().min(1, 'Description is required'),
+// Items have two pricing modes. Per-kg requires weight ≥ 0.01 + rate ≥ 0.
+// Per-piece requires pieceCount ≥ 1 + ratePerPiece ≥ 0 + flyerRatePerPiece
+// ≥ 0 (the flyer rate is typed by the owner — no prefill from flyer.
+// ratePerKg, since there's no per-piece equivalent on the flyer doc).
+// Validation is mode-aware via superRefine so an item only has to satisfy
+// the constraints of its current mode.
+// Optional flyer-qty preprocessor: empty string / null / undefined →
+// undefined (so the schema's .optional() accepts it cleanly and the
+// field is OMITTED on save). Any numeric input is coerced to a number.
+// Blank means "same as customer qty" — see getFlyerWeightKg /
+// getFlyerPieceCount in orderHelpers.ts.
+const optionalNonNegNumber = z.preprocess(
+  (v) => (v === '' || v == null ? undefined : Number(v)),
+  z.number().min(0).optional(),
+);
+
+const itemSchema = z
+  .object({
+    description: z.string().min(1, 'Description is required'),
+    categoryId: z.string().min(1, 'Category is required'),
+    categoryName: z.string(),
+    pricingMode: z.enum(['per_kg', 'per_piece']).default('per_kg'),
+    weightKg: z.coerce.number().min(0, 'Weight must be at least 0'),
+    ratePerKg: z.coerce.number().min(0, 'Rate must be at least 0'),
+    pieceCount: z.coerce.number().min(0, 'Pieces must be at least 0').optional(),
+    ratePerPiece: z.coerce.number().min(0, 'Rate must be at least 0').optional(),
+    flyerRatePerPiece: z.coerce.number().min(0, 'Flyer rate must be at least 0').optional(),
+    // 2026-06-07 flyer-qty split. Optional with blank=undefined (=
+    // "same as customer qty"). Per-piece items ignore flyerWeightKg
+    // and per-kg items ignore flyerPieceCount at READ time (see
+    // getFlyerWeightKg / getFlyerPieceCount), but we still let the
+    // form persist whichever the user typed so flipping mode doesn't
+    // lose the input.
+    flyerWeightKg: optionalNonNegNumber,
+    flyerPieceCount: optionalNonNegNumber,
+    subtotal: z.coerce.number(),
+  })
+  .superRefine((it, ctx) => {
+    if (it.pricingMode === 'per_piece') {
+      if ((it.pieceCount ?? 0) < 1) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['pieceCount'], message: 'Pieces must be at least 1' });
+      }
+    } else {
+      if ((it.weightKg ?? 0) < 0.01) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['weightKg'], message: 'Weight must be at least 0.01 kg' });
+      }
+    }
+  });
+
+// Per-category flyer rate row. categoryId references one of the order's
+// items' categories. ratePerKg is editable per row.
+const categoryRateSchema = z.object({
   categoryId: z.string().min(1, 'Category is required'),
-  categoryName: z.string(),
-  weightKg: z.coerce.number().min(0.01, 'Weight must be at least 0.01 kg'),
   ratePerKg: z.coerce.number().min(0, 'Rate must be at least 0'),
-  subtotal: z.coerce.number(),
 });
 
+// New assignment shape — single weight (auto-derived from order total)
+// + array of per-category rates. The single payoutRatePerKg input is GONE,
+// replaced by the per-category rate rows.
+//
+// `weightKg` minimum is 0 (NOT 0.01) — a per-piece-only order has
+// totalWeight = 0 and so assignment.weightKg = 0; rejecting that would
+// block flyer assignment on any piece-only order. The form computes
+// per-piece payout from item.flyerRatePerPiece (Option A), so an
+// assignment with weightKg=0 + a non-zero piece-side payoutAmount is
+// legitimate, not a malformed row.
 const assignmentSchema = z.object({
   flyerId: z.string().min(1, 'Flyer is required'),
   flyerName: z.string(),
-  weightKg: z.coerce.number().min(0.01, 'Weight must be at least 0.01 kg'),
-  payoutRatePerKg: z.coerce.number().min(0, 'Payout rate must be at least 0'),
+  /** Customer-side denormalised total — stays unchanged at the split. */
+  weightKg: z.coerce.number().min(0, 'Weight must be at least 0'),
+  /** Flyer-side denormalised total, set at submit by the form. Drives
+   *  flyer.kgUsed deltas in the create/delete transactions. Optional
+   *  so legacy assignment rows (no flyer-side data) read cleanly. */
+  flyerWeightKg: optionalNonNegNumber,
+  categoryRates: z.array(categoryRateSchema),
   payoutAmount: z.coerce.number(),
 });
 
@@ -139,6 +221,11 @@ export function OrderFormPage() {
   const watchedAssignments = watch('flyerAssignments');
   const totalAmount = watchedItems.reduce((s, it) => s + (Number(it.subtotal) || 0), 0);
   const totalWeight = watchedItems.reduce((s, it) => s + (Number(it.weightKg) || 0), 0);
+  // FLYER-side total kg. Drives capacity checks + assignment.flyerWeightKg
+  // denorm at submit. For an order with no flyer overrides this equals
+  // totalWeight (via the fallback in getFlyerWeightKg); for an order with
+  // any flyer override this can differ.
+  const totalFlyerWeight = calcTotalFlyerWeight(watchedItems as OrderItem[]);
   const totalPayout = watchedAssignments.reduce((s, a) => s + (Number(a.payoutAmount) || 0), 0);
   const profit = totalAmount - totalPayout;
 
@@ -157,16 +244,80 @@ export function OrderFormPage() {
   const onSubmit = handleSubmit(
     async (data) => {
       try {
+        // Recompute each assignment's payoutAmount + weightKg + flyerWeightKg
+        // from the final item set at submit time. Live state could be stale
+        // if the user edited items AFTER setting rates.
+        //
+        // Two parallel groupings on submit:
+        //   finalGroups        — CUSTOMER kg per category. Used for the
+        //                        validCategoryIds set (pruning rates with
+        //                        no matching item category). Also still
+        //                        the canonical customer-side group source.
+        //   finalFlyerGroups   — FLYER kg per category. Drives the per-kg
+        //                        payout calculation post-2026-06-07 split.
+        // The kgByCategoryId Map below uses FLYER kg → category rate × this
+        // is what the flyer is paid on.
+        const finalGroups = groupItemsByCategory(data.items as OrderItem[]);
+        const validCategoryIds = new Set(finalGroups.map((g) => g.categoryId));
+        const finalFlyerGroups = groupItemsByCategoryFlyerKg(data.items as OrderItem[]);
+        const flyerKgByCategoryId = new Map(
+          finalFlyerGroups.map((g) => [g.categoryId, g.weightKg]),
+        );
+        // Per-piece flyer payout uses FLYER pieces (getFlyerPieceCount,
+        // falls back to pieceCount when no override). Each assignment
+        // counts the full per-piece payout — single-flyer-optimised,
+        // same trade-off as the per-kg side.
+        const finalPiecePayout = (data.items as OrderItem[]).reduce((s, it) => {
+          if (it.pricingMode !== 'per_piece') return s;
+          return s + getFlyerPieceCount(it) * (Number(it.flyerRatePerPiece) || 0);
+        }, 0);
+        // Per-assignment flyer-side total = Σ flyer kg across per-kg
+        // items. Per-piece items contribute 0 (getFlyerWeightKg guards
+        // mode). Stored so the create/delete transactions can update
+        // flyer.kgUsed without walking items[].
+        const finalFlyerWeight = calcTotalFlyerWeight(data.items as OrderItem[]);
+        const finalAssignments = data.flyerAssignments.map((a) => {
+          const pruned = (a.categoryRates ?? []).filter((cr) => validCategoryIds.has(cr.categoryId));
+          const kgPayout = pruned.reduce(
+            (s, cr) => s + (flyerKgByCategoryId.get(cr.categoryId) ?? 0) * (cr.ratePerKg || 0),
+            0,
+          );
+          return {
+            ...a,
+            categoryRates: pruned,
+            // weightKg stays the CUSTOMER total (denormalized, what was
+            // billed). flyerWeightKg is the FLYER total — feeds kgUsed.
+            // Both written at submit; the two values are equal when no
+            // overrides exist on any item.
+            weightKg: totalWeight,
+            flyerWeightKg: finalFlyerWeight,
+            payoutAmount: +(kgPayout + finalPiecePayout).toFixed(2),
+          };
+        });
+        const recomputedTotalPayout = finalAssignments.reduce((s, a) => s + a.payoutAmount, 0);
+        const recomputedProfit = totalAmount - recomputedTotalPayout;
+
+        // Strip undefined optional fields per item/assignment before
+        // write — Firebase SDK v11 rejects literal undefined values
+        // (CLAUDE.md §10). Per-kg items legitimately have no
+        // pieceCount/ratePerPiece/flyerPieceCount; per-piece items
+        // have no flyerWeightKg; orders without overrides have neither
+        // flyer override. omitUndefined preserves the "absent ⇒
+        // fallback" semantics getFlyerWeightKg / getFlyerPieceCount
+        // depend on.
+        const cleanedItems = (data.items as OrderItem[]).map((it) => omitUndefined(it));
+        const cleanedAssignments = finalAssignments.map((a) => omitUndefined(a));
+
         const payload = {
           customerId: data.customerId,
           customerName: data.customerName,
           customerPhone: data.customerPhone,
-          items: data.items,
+          items: cleanedItems,
           totalWeightKg: totalWeight,
           totalAmount,
-          flyerAssignments: data.flyerAssignments,
-          totalPayout,
-          profit,
+          flyerAssignments: cleanedAssignments,
+          totalPayout: recomputedTotalPayout,
+          profit: recomputedProfit,
           paymentInstructions: { enabledMethodIds: data.enabledMethodIds },
           notes: data.notes,
         };
@@ -217,13 +368,13 @@ export function OrderFormPage() {
   }
 
   function addItem() {
-    // Preload the default category so the row passes validation as-is.
-    // ratePerKg comes from the category's defaultRatePerKg per §5; weight
-    // starts at 0 so subtotal is also 0 until the owner types a weight.
+    // New items default to per-kg mode (the original model). Owner can
+    // flip to per-piece via the row toggle.
     items.append({
       description: '',
       categoryId: defaultCategory?.id ?? '',
       categoryName: defaultCategory?.name ?? '',
+      pricingMode: 'per_kg',
       weightKg: 0,
       ratePerKg: defaultCategory?.defaultRatePerKg ?? 0,
       subtotal: 0,
@@ -231,12 +382,18 @@ export function OrderFormPage() {
   }
 
   function addAssignment() {
-    const remaining = totalWeight - watchedAssignments.reduce((s, a) => s + Number(a.weightKg || 0), 0);
+    // weightKg = customer total (denorm, unchanged). flyerWeightKg =
+    // FLYER total (drives capacity). categoryRates seeded one zero-rate
+    // row per distinct category currently in the order; the user picks
+    // a flyer (prefills to flat ratePerKg) or types rates per row.
+    // payoutAmount is 0 until rates are filled in.
+    const groups = groupItemsByCategory(watchedItems as OrderItem[]);
     assignments.append({
       flyerId: '',
       flyerName: '',
-      weightKg: Math.max(0, remaining),
-      payoutRatePerKg: 0,
+      weightKg: totalWeight,
+      flyerWeightKg: totalFlyerWeight,
+      categoryRates: groups.map((g) => ({ categoryId: g.categoryId, ratePerKg: 0 })),
       payoutAmount: 0,
     });
   }
@@ -347,6 +504,18 @@ export function OrderFormPage() {
                       <Trash2 />
                     </Button>
                   </div>
+                  {/*
+                    Mode toggle + the mode-specific input pair. Per-kg mode
+                    keeps the original weight + rate layout. Per-piece mode
+                    swaps to a piece count + rate-per-piece layout. The
+                    subtotal recomputes off whichever mode is active.
+
+                    Toggling mode RESETS the inactive-mode fields to 0 so
+                    they don't carry stale data into storage. The flyer-side
+                    per-piece rate (`flyerRatePerPiece`) is typed in the
+                    flyer assignment section, not here — same place all
+                    other flyer rates live.
+                  */}
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     <div className="col-span-2 sm:col-span-2">
                       <Controller
@@ -358,18 +527,17 @@ export function OrderFormPage() {
                             onValueChange={(v) => {
                               const cat = categories.find((c) => c.id === v);
                               if (cat) {
-                                // f.onChange keeps the Controller's own dirty/
-                                // touched bookkeeping in sync alongside the
-                                // setValue calls that update the sibling
-                                // categoryName/ratePerKg/subtotal fields.
                                 f.onChange(cat.id);
                                 setValue(`items.${i}.categoryId`, cat.id);
                                 setValue(`items.${i}.categoryName`, cat.name);
-                                setValue(`items.${i}.ratePerKg`, cat.defaultRatePerKg);
-                                const w = Number(watch(`items.${i}.weightKg`)) || 0;
-                                setValue(`items.${i}.subtotal`, +(cat.defaultRatePerKg * w).toFixed(2));
-                                // Mark this row as user-curated so the
-                                // untouched-Other nudge disappears.
+                                // Only prefill the per-kg rate; per-piece
+                                // categories don't have a default piece rate
+                                // (we don't model that).
+                                if (item?.pricingMode !== 'per_piece') {
+                                  setValue(`items.${i}.ratePerKg`, cat.defaultRatePerKg);
+                                  const w = Number(watch(`items.${i}.weightKg`)) || 0;
+                                  setValue(`items.${i}.subtotal`, +(cat.defaultRatePerKg * w).toFixed(2));
+                                }
                                 setTouchedCategoryRows((prev) => {
                                   if (prev.has(field.id)) return prev;
                                   const next = new Set(prev);
@@ -404,42 +572,186 @@ export function OrderFormPage() {
                         </p>
                       )}
                     </div>
-                    <Input
-                      type="number"
-                      step="any"
-                      min={0}
-                      inputMode="decimal"
-                      placeholder="kg"
-                      aria-invalid={!!itemError?.weightKg || undefined}
-                      className={cn(
-                        itemError?.weightKg && 'border-destructive focus:border-destructive',
-                      )}
-                      {...register(`items.${i}.weightKg`, {
-                        onChange: (e) => {
-                          const w = Number(e.target.value) || 0;
-                          const r = Number(watch(`items.${i}.ratePerKg`)) || 0;
-                          setValue(`items.${i}.subtotal`, +(w * r).toFixed(2));
-                        },
-                      })}
-                    />
-                    <Input
-                      type="number"
-                      step="any"
-                      min={0}
-                      inputMode="decimal"
-                      placeholder="THB/kg"
-                      aria-invalid={!!itemError?.ratePerKg || undefined}
-                      className={cn(
-                        itemError?.ratePerKg && 'border-destructive focus:border-destructive',
-                      )}
-                      {...register(`items.${i}.ratePerKg`, {
-                        onChange: (e) => {
-                          const r = Number(e.target.value) || 0;
-                          const w = Number(watch(`items.${i}.weightKg`)) || 0;
-                          setValue(`items.${i}.subtotal`, +(w * r).toFixed(2));
-                        },
-                      })}
-                    />
+                    {/* Mode toggle — kg / pieces. Spans both unit columns on
+                        the 4-col grid by stacking above the mode-specific
+                        inputs below. */}
+                    <div className="col-span-2 sm:col-span-2 flex items-center gap-2 text-xs">
+                      <span className="text-muted-foreground">Charge</span>
+                      <Controller
+                        control={control}
+                        name={`items.${i}.pricingMode`}
+                        render={({ field: f }) => (
+                          <Select
+                            value={f.value ?? 'per_kg'}
+                            onValueChange={(v) => {
+                              const next = v as 'per_kg' | 'per_piece';
+                              f.onChange(next);
+                              if (next === 'per_piece') {
+                                // Switching INTO per_piece: zero out kg-side
+                                // fields so kgUsed rollups & summing readers
+                                // exclude this item. Also clear the
+                                // flyerWeightKg override (stale data from
+                                // the previous mode).
+                                setValue(`items.${i}.weightKg`, 0);
+                                setValue(`items.${i}.ratePerKg`, 0);
+                                setValue(`items.${i}.flyerWeightKg`, undefined);
+                                setValue(`items.${i}.pieceCount`, 1);
+                                setValue(`items.${i}.ratePerPiece`, 0);
+                                setValue(`items.${i}.flyerRatePerPiece`, 0);
+                                setValue(`items.${i}.flyerPieceCount`, undefined);
+                                setValue(`items.${i}.subtotal`, 0);
+                              } else {
+                                // Switching INTO per_kg: clear per-piece-
+                                // only fields (including flyerPieceCount)
+                                // and restore the category's default rate
+                                // so the row passes validation.
+                                const cat = categories.find((c) => c.id === item?.categoryId);
+                                setValue(`items.${i}.pieceCount`, 0);
+                                setValue(`items.${i}.ratePerPiece`, 0);
+                                setValue(`items.${i}.flyerRatePerPiece`, 0);
+                                setValue(`items.${i}.flyerPieceCount`, undefined);
+                                setValue(`items.${i}.weightKg`, 0);
+                                setValue(`items.${i}.ratePerKg`, cat?.defaultRatePerKg ?? 0);
+                                setValue(`items.${i}.flyerWeightKg`, undefined);
+                                setValue(`items.${i}.subtotal`, 0);
+                              }
+                            }}
+                          >
+                            <SelectTrigger className="h-8 w-[8.5rem] text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="per_kg">per kg</SelectItem>
+                              <SelectItem value="per_piece">per piece</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        )}
+                      />
+                    </div>
+                    {item?.pricingMode === 'per_piece' ? (
+                      <>
+                        <Input
+                          type="number"
+                          step="1"
+                          min={1}
+                          inputMode="numeric"
+                          placeholder="pieces"
+                          aria-invalid={!!itemError?.pieceCount || undefined}
+                          className={cn(
+                            itemError?.pieceCount && 'border-destructive focus:border-destructive',
+                          )}
+                          {...register(`items.${i}.pieceCount`, {
+                            onChange: (e) => {
+                              const p = Number(e.target.value) || 0;
+                              const r = Number(watch(`items.${i}.ratePerPiece`)) || 0;
+                              setValue(`items.${i}.subtotal`, +(p * r).toFixed(2));
+                            },
+                          })}
+                        />
+                        <Input
+                          type="number"
+                          step="any"
+                          min={0}
+                          inputMode="decimal"
+                          placeholder="THB/piece"
+                          aria-invalid={!!itemError?.ratePerPiece || undefined}
+                          className={cn(
+                            itemError?.ratePerPiece && 'border-destructive focus:border-destructive',
+                          )}
+                          {...register(`items.${i}.ratePerPiece`, {
+                            onChange: (e) => {
+                              const r = Number(e.target.value) || 0;
+                              const p = Number(watch(`items.${i}.pieceCount`)) || 0;
+                              setValue(`items.${i}.subtotal`, +(p * r).toFixed(2));
+                            },
+                          })}
+                        />
+                        {/* Flyer-pieces override (2026-06-07 split).
+                            Blank = same as customer pieces (placeholder
+                            shows the fallback value). Doesn't affect
+                            customer subtotal — only flyer payout math. */}
+                        <div className="col-span-2 sm:col-span-2 space-y-0.5">
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                            Flyer pcs (optional)
+                          </span>
+                          <Input
+                            type="number"
+                            step="1"
+                            min={0}
+                            inputMode="numeric"
+                            placeholder={`Same as customer (${Number(item?.pieceCount) || 0})`}
+                            {...register(`items.${i}.flyerPieceCount`, {
+                              // Blank → undefined so getFlyerPieceCount
+                              // falls back to customer pieceCount. Any
+                              // typed digit becomes a Number.
+                              setValueAs: (v) =>
+                                v === '' || v == null ? undefined : Number(v),
+                            })}
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <Input
+                          type="number"
+                          step="any"
+                          min={0}
+                          inputMode="decimal"
+                          placeholder="kg"
+                          aria-invalid={!!itemError?.weightKg || undefined}
+                          className={cn(
+                            itemError?.weightKg && 'border-destructive focus:border-destructive',
+                          )}
+                          {...register(`items.${i}.weightKg`, {
+                            onChange: (e) => {
+                              const w = Number(e.target.value) || 0;
+                              const r = Number(watch(`items.${i}.ratePerKg`)) || 0;
+                              setValue(`items.${i}.subtotal`, +(w * r).toFixed(2));
+                            },
+                          })}
+                        />
+                        <Input
+                          type="number"
+                          step="any"
+                          min={0}
+                          inputMode="decimal"
+                          placeholder="THB/kg"
+                          aria-invalid={!!itemError?.ratePerKg || undefined}
+                          className={cn(
+                            itemError?.ratePerKg && 'border-destructive focus:border-destructive',
+                          )}
+                          {...register(`items.${i}.ratePerKg`, {
+                            onChange: (e) => {
+                              const r = Number(e.target.value) || 0;
+                              const w = Number(watch(`items.${i}.weightKg`)) || 0;
+                              setValue(`items.${i}.subtotal`, +(w * r).toFixed(2));
+                            },
+                          })}
+                        />
+                        {/* Flyer-kg override (2026-06-07 split). Blank =
+                            same as customer kg (placeholder shows the
+                            fallback). Doesn't affect customer subtotal —
+                            only flyer payout math + capacity (kgUsed). */}
+                        <div className="col-span-2 sm:col-span-2 space-y-0.5">
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                            Flyer kg (optional)
+                          </span>
+                          <Input
+                            type="number"
+                            step="any"
+                            min={0}
+                            inputMode="decimal"
+                            placeholder={`Same as customer (${Number(item?.weightKg) || 0})`}
+                            {...register(`items.${i}.flyerWeightKg`, {
+                              // Blank → undefined so getFlyerWeightKg
+                              // falls back to customer weightKg.
+                              setValueAs: (v) =>
+                                v === '' || v == null ? undefined : Number(v),
+                            })}
+                          />
+                        </div>
+                      </>
+                    )}
                   </div>
                   <div className="flex items-center justify-end gap-2 text-sm">
                     <span className="text-muted-foreground">Subtotal</span>
@@ -454,6 +766,9 @@ export function OrderFormPage() {
                       itemError.categoryId?.message,
                       itemError.weightKg?.message,
                       itemError.ratePerKg?.message,
+                      itemError.pieceCount?.message,
+                      itemError.ratePerPiece?.message,
+                      itemError.flyerRatePerPiece?.message,
                     ].filter(Boolean);
                     return msgs.length ? (
                       <p className="text-xs text-destructive">{msgs.join(' · ')}</p>
@@ -488,7 +803,13 @@ export function OrderFormPage() {
               variant="ghost"
               size="sm"
               onClick={addAssignment}
-              disabled={!flyers.length || totalWeight <= 0}
+              // Gate on item PRESENCE, not on order weight. A per-piece-
+              // only order has totalWeight === 0 by design (per-piece
+              // items carry no kg) but is still validly assignable —
+              // we just pay per piece instead of per kg. The button stays
+              // disabled when there are no flyers AT ALL or no items yet
+              // to assign; otherwise it's enabled regardless of unit mix.
+              disabled={!flyers.length || items.fields.length === 0}
             >
               <Plus /> Add flyer
             </Button>
@@ -506,22 +827,99 @@ export function OrderFormPage() {
               const flyer = flyers.find((f) => f.id === a?.flyerId);
               const flyerRemaining = flyer ? flyer.kgAvailable - flyer.kgUsed : 0;
               const assignmentError = errors.flyerAssignments?.[i];
-              // The refine() error on the parent array can stringify to an
-              // object-with-message at this index slot — guard with Array.isArray
-              // for the (non-existent in practice but typed) array case.
               const flyerInvalid =
                 !!assignmentError && !Array.isArray(assignmentError) && !!assignmentError.flyerId;
-              const assignmentWeightInvalid =
-                !!assignmentError && !Array.isArray(assignmentError) && !!assignmentError.weightKg;
-              const assignmentRateInvalid =
-                !!assignmentError && !Array.isArray(assignmentError) && !!assignmentError.payoutRatePerKg;
+
+              // Per-kg category rows — drives the flyer payout breakdown
+              // displayed in this block AND the live payout calc. Uses
+              // groupItemsByCategoryFlyerKg (FLYER kg, post 2026-06-07
+              // split). The customer-kg view of categories is irrelevant
+              // here — this section is the flyer's payment math.
+              const rows = groupItemsByCategoryFlyerKg(watchedItems as OrderItem[]);
+              const rates = a?.categoryRates ?? [];
+              const rateByCategoryId = new Map(rates.map((cr) => [cr.categoryId, cr.ratePerKg]));
+
+              // Per-piece item rows. One row per per-piece item in the
+              // order, regardless of category. Indexed by item position
+              // so setValue can write back to items[idx].flyerRatePerPiece.
+              const perPieceRows = watchedItems
+                .map((it, idx) => ({ it, idx }))
+                .filter(({ it }) => it.pricingMode === 'per_piece');
+
+              // Helper — sum every per-piece item's flyer payout for the
+              // current items[] state, using FLYER piece counts via
+              // getFlyerPieceCount (falls back to pieceCount when no
+              // override). Shared between livePayout, setRowRate, and
+              // setPieceRate so the formula lives in one place.
+              const piecePayout = () =>
+                (watchedItems as OrderItem[]).reduce((s, it) => {
+                  if (it.pricingMode !== 'per_piece') return s;
+                  return s + getFlyerPieceCount(it) * (Number(it.flyerRatePerPiece) || 0);
+                }, 0);
+
+              // Live payout = Σ (flyer kg per category × rate) + Σ
+              // (flyer pieces × flyer rate). Same formula as the
+              // submit-time calc; row.weightKg here is FLYER kg.
+              const livePayout =
+                rows.reduce(
+                  (s, row) => s + (row.weightKg || 0) * (rateByCategoryId.get(row.categoryId) || 0),
+                  0,
+                ) + piecePayout();
+
+              /** Upsert one category's rate into the assignment's
+                  categoryRates array, then recompute payoutAmount +
+                  flyerWeightKg via setValue. payoutAmount includes the
+                  per-piece contribution. */
+              const setRowRate = (categoryId: string, ratePerKg: number) => {
+                const next = [...(a?.categoryRates ?? [])];
+                const idx = next.findIndex((cr) => cr.categoryId === categoryId);
+                if (idx >= 0) next[idx] = { categoryId, ratePerKg };
+                else next.push({ categoryId, ratePerKg });
+                setValue(`flyerAssignments.${i}.categoryRates`, next, { shouldDirty: true });
+                const lookup = new Map(next.map((cr) => [cr.categoryId, cr.ratePerKg]));
+                const kgPayout = rows.reduce(
+                  (s, row) => s + (row.weightKg || 0) * (lookup.get(row.categoryId) || 0),
+                  0,
+                );
+                setValue(`flyerAssignments.${i}.payoutAmount`, +(kgPayout + piecePayout()).toFixed(2));
+                // Both denormalised totals — customer (unchanged) and
+                // flyer (new) — refreshed on every rate edit.
+                setValue(`flyerAssignments.${i}.weightKg`, totalWeight);
+                setValue(`flyerAssignments.${i}.flyerWeightKg`, totalFlyerWeight);
+              };
+
+              /** Write a per-piece flyer rate to the corresponding item
+                  AND refresh this assignment's payoutAmount. Per-piece
+                  flyer rates live on the item (Option A) — write goes
+                  to items[itemIdx].flyerRatePerPiece. */
+              const setPieceRate = (itemIdx: number, ratePerPiece: number) => {
+                setValue(`items.${itemIdx}.flyerRatePerPiece`, ratePerPiece, { shouldDirty: true });
+                // Manually recompute piecePayout using the new rate —
+                // the closure captured `watchedItems` at render time so
+                // the helper can't see the just-set value yet. Uses
+                // FLYER piece counts via getFlyerPieceCount.
+                const newPiecePayout = (watchedItems as OrderItem[]).reduce((s, it, idx) => {
+                  if (it.pricingMode !== 'per_piece') return s;
+                  const r = idx === itemIdx ? ratePerPiece : (Number(it.flyerRatePerPiece) || 0);
+                  return s + getFlyerPieceCount(it) * r;
+                }, 0);
+                const lookup = new Map(rates.map((cr) => [cr.categoryId, cr.ratePerKg]));
+                const kgPayout = rows.reduce(
+                  (s, row) => s + (row.weightKg || 0) * (lookup.get(row.categoryId) || 0),
+                  0,
+                );
+                setValue(`flyerAssignments.${i}.payoutAmount`, +(kgPayout + newPiecePayout).toFixed(2));
+                setValue(`flyerAssignments.${i}.weightKg`, totalWeight);
+                setValue(`flyerAssignments.${i}.flyerWeightKg`, totalFlyerWeight);
+              };
+
               return (
                 <div
                   key={field.id}
                   ref={(el) => {
                     flyerRowRefs.current[i] = el;
                   }}
-                  className="space-y-2 rounded-lg border border-border p-3"
+                  className="space-y-3 rounded-lg border border-border p-3"
                 >
                   <div className="flex items-start gap-2">
                     <div className="flex-1">
@@ -533,16 +931,31 @@ export function OrderFormPage() {
                             value={f.value}
                             onValueChange={(v) => {
                               const fl = flyers.find((x) => x.id === v);
-                              if (fl) {
-                                // f.onChange keeps Controller dirty/touched
-                                // state in sync (see Items dropdown above).
-                                f.onChange(fl.id);
-                                setValue(`flyerAssignments.${i}.flyerId`, fl.id);
-                                setValue(`flyerAssignments.${i}.flyerName`, fl.name);
-                                setValue(`flyerAssignments.${i}.payoutRatePerKg`, fl.ratePerKg);
-                                const w = Number(watch(`flyerAssignments.${i}.weightKg`)) || 0;
-                                setValue(`flyerAssignments.${i}.payoutAmount`, +(fl.ratePerKg * w).toFixed(2));
-                              }
+                              if (!fl) return;
+                              f.onChange(fl.id);
+                              setValue(`flyerAssignments.${i}.flyerId`, fl.id);
+                              setValue(`flyerAssignments.${i}.flyerName`, fl.name);
+                              setValue(`flyerAssignments.${i}.weightKg`, totalWeight);
+                              setValue(`flyerAssignments.${i}.flyerWeightKg`, totalFlyerWeight);
+                              // Prefill every PER-KG category row with the
+                              // flyer's flat ratePerKg as a starting point.
+                              // Per-piece items get no prefill — owner
+                              // types the flyer-piece rate fresh.
+                              const seeded = rows.map((row) => ({
+                                categoryId: row.categoryId,
+                                ratePerKg: fl.ratePerKg,
+                              }));
+                              setValue(`flyerAssignments.${i}.categoryRates`, seeded);
+                              // kgPayout uses FLYER kg (row.weightKg here
+                              // is groupItemsByCategoryFlyerKg output).
+                              const kgPayout = rows.reduce(
+                                (s, row) => s + (row.weightKg || 0) * fl.ratePerKg,
+                                0,
+                              );
+                              setValue(
+                                `flyerAssignments.${i}.payoutAmount`,
+                                +(kgPayout + piecePayout()).toFixed(2),
+                              );
                             }}
                           >
                             <SelectTrigger
@@ -569,68 +982,140 @@ export function OrderFormPage() {
                       <Trash2 />
                     </Button>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <Input
-                        type="number"
-                        step="any"
-                        min={0}
-                        inputMode="decimal"
-                        placeholder="kg"
-                        aria-invalid={assignmentWeightInvalid || undefined}
-                        className={cn(
-                          assignmentWeightInvalid && 'border-destructive focus:border-destructive',
-                        )}
-                        {...register(`flyerAssignments.${i}.weightKg`, {
-                          onChange: (e) => {
-                            const w = Number(e.target.value) || 0;
-                            const r = Number(watch(`flyerAssignments.${i}.payoutRatePerKg`)) || 0;
-                            setValue(`flyerAssignments.${i}.payoutAmount`, +(w * r).toFixed(2));
-                          },
-                        })}
-                      />
-                      {flyer && (
-                        <p className={cn('mt-1 text-xs', (a?.weightKg ?? 0) > flyerRemaining ? 'text-destructive' : 'text-muted-foreground')}>
-                          Capacity left: {flyerRemaining.toFixed(1)} kg
-                        </p>
+
+                  {/* Capacity-left hint. Compares FLYER total weight
+                      (post 2026-06-07 split — what's about to feed
+                      kgUsed) against flyer.kgAvailable - kgUsed. Single-
+                      flyer-optimised; splits see the trade-off note on
+                      FlyerAssignment.weightKg / flyerWeightKg. When the
+                      flyer total differs from customer total (i.e. any
+                      item has a flyerWeightKg override), the parenthetic
+                      reminds the owner the check is on the FLOWN kg. */}
+                  {flyer && (
+                    <p
+                      className={cn(
+                        'text-xs',
+                        totalFlyerWeight > flyerRemaining ? 'text-destructive' : 'text-muted-foreground',
+                      )}
+                    >
+                      Capacity left: {flyerRemaining.toFixed(1)} kg
+                      {Math.abs(totalFlyerWeight - totalWeight) > 0.005 && (
+                        <span className="text-muted-foreground">
+                          {' '}· flyer {totalFlyerWeight.toFixed(1)} kg
+                        </span>
+                      )}
+                    </p>
+                  )}
+
+                  {/* Per-category rate rows. One row per unique category
+                      in the order's PER-KG items (per-piece items are
+                      excluded — they get their own block below). Rate
+                      input is editable; kg is the category's total in the
+                      order (read-only); subtotal = kg × rate. */}
+                  {rows.length === 0 && perPieceRows.length === 0 ? (
+                    <p className="rounded-md bg-muted/30 p-2 text-xs text-muted-foreground">
+                      Add items above to set rates for this flyer.
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {rows.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="grid grid-cols-[1fr_5rem_5rem] items-center gap-2 px-1 text-xs text-muted-foreground">
+                            <span>Category</span>
+                            <span className="text-right">฿/kg</span>
+                            <span className="text-right">Subtotal</span>
+                          </div>
+                          {rows.map((row) => {
+                            const rate = rateByCategoryId.get(row.categoryId) ?? 0;
+                            const subtotal = row.weightKg * rate;
+                            return (
+                              <div
+                                key={row.categoryId}
+                                className="grid grid-cols-[1fr_5rem_5rem] items-center gap-2"
+                              >
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-medium">{row.categoryName}</div>
+                                  <div className="text-xs text-muted-foreground">{fmtKg(row.weightKg)}</div>
+                                </div>
+                                <Input
+                                  type="number"
+                                  step="any"
+                                  min={0}
+                                  inputMode="decimal"
+                                  placeholder="0"
+                                  className="h-9 text-right tabular-nums"
+                                  value={rate || ''}
+                                  onChange={(e) => setRowRate(row.categoryId, Number(e.target.value) || 0)}
+                                />
+                                <span className="text-right text-sm tabular-nums">{fmtMoney(subtotal)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Per-piece item rows. One row per per-piece item
+                          in the order — flyer rate is typed FRESH (no
+                          prefill). Input writes to items[idx].
+                          flyerRatePerPiece. The displayed count is the
+                          FLYER piece count via getFlyerPieceCount
+                          (fallback to customer pieceCount). Subtotal =
+                          flyer pieces × flyer rate. */}
+                      {perPieceRows.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="grid grid-cols-[1fr_5rem_5rem] items-center gap-2 px-1 text-xs text-muted-foreground">
+                            <span>Per-piece item</span>
+                            <span className="text-right">฿/piece</span>
+                            <span className="text-right">Subtotal</span>
+                          </div>
+                          {perPieceRows.map(({ it, idx }) => {
+                            const rate = Number(it.flyerRatePerPiece) || 0;
+                            const flyerCount = getFlyerPieceCount(it as OrderItem);
+                            const subtotal = flyerCount * rate;
+                            return (
+                              <div
+                                key={`piece-${idx}`}
+                                className="grid grid-cols-[1fr_5rem_5rem] items-center gap-2"
+                              >
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-medium">
+                                    {it.description || '(unnamed)'}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {flyerCount} {flyerCount === 1 ? 'piece' : 'pieces'} flown
+                                  </div>
+                                </div>
+                                <Input
+                                  type="number"
+                                  step="any"
+                                  min={0}
+                                  inputMode="decimal"
+                                  placeholder="0"
+                                  className="h-9 text-right tabular-nums"
+                                  value={rate || ''}
+                                  onChange={(e) => setPieceRate(idx, Number(e.target.value) || 0)}
+                                />
+                                <span className="text-right text-sm tabular-nums">{fmtMoney(subtotal)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
                       )}
                     </div>
-                    <Input
-                      type="number"
-                      step="any"
-                      min={0}
-                      inputMode="decimal"
-                      placeholder="Payout/kg"
-                      aria-invalid={assignmentRateInvalid || undefined}
-                      className={cn(
-                        assignmentRateInvalid && 'border-destructive focus:border-destructive',
-                      )}
-                      {...register(`flyerAssignments.${i}.payoutRatePerKg`, {
-                        onChange: (e) => {
-                          const r = Number(e.target.value) || 0;
-                          const w = Number(watch(`flyerAssignments.${i}.weightKg`)) || 0;
-                          setValue(`flyerAssignments.${i}.payoutAmount`, +(r * w).toFixed(2));
-                        },
-                      })}
-                    />
-                  </div>
+                  )}
+
+                  <Separator />
                   <div className="flex items-center justify-end gap-2 text-sm">
                     <span className="text-muted-foreground">Payout</span>
-                    <span className="font-medium tabular-nums">{fmtMoney(a?.payoutAmount)}</span>
+                    <span className="font-medium tabular-nums">{fmtMoney(livePayout)}</span>
                   </div>
-                  {/* Per-assignment validation errors. Messages now name the
-                      field (e.g. "Flyer is required") — joined output is
-                      self-labeling. */}
-                  {assignmentError && !Array.isArray(assignmentError) && (() => {
-                    const msgs = [
-                      assignmentError.flyerId?.message,
-                      assignmentError.weightKg?.message,
-                      assignmentError.payoutRatePerKg?.message,
-                    ].filter(Boolean);
-                    return msgs.length ? (
-                      <p className="text-xs text-destructive">{msgs.join(' · ')}</p>
-                    ) : null;
-                  })()}
+
+                  {/* Validation errors — only flyerId stays as a top-level
+                      assignment field (weight + rates are derived, not
+                      user-typed at the assignment level). */}
+                  {assignmentError && !Array.isArray(assignmentError) && assignmentError.flyerId?.message && (
+                    <p className="text-xs text-destructive">{assignmentError.flyerId.message}</p>
+                  )}
                 </div>
               );
             })}

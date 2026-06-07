@@ -1,8 +1,9 @@
 import { useRef } from 'react';
 import { Printer, CheckCircle2, Image as ImageIcon } from 'lucide-react';
 import { Button } from '../../components/ui/button';
+import { MoneyAmount } from '../../components/MoneyDisplay';
 import { Spinner } from '../../components/Spinner';
-import { fmtDate, fmtDateTime, fmtKg, fmtMoney } from '../../lib/formatters';
+import { fmtDate, fmtDateTime, fmtKg } from '../../lib/formatters';
 import { useSaveDocAsImage } from './useSaveDocAsImage';
 import type { PublicOrder } from '../../types';
 
@@ -143,39 +144,58 @@ function ReceiptBody({ order, mode }: { order: PublicOrder; mode: 'screen' | 'a4
         </div>
       </div>
 
-      {/* Line-items */}
+      {/* Line-items — Qty column = "X kg" for per-kg, "X pcs" for
+          per-piece. Mirrors Invoice exactly (same grid template, same
+          MoneyAmount helpers, same border-on-cell pattern) so the saved
+          invoice and receipt images of the same order share identical
+          column geometry. See Invoice.tsx for the design rationale. */}
       <div className="overflow-hidden rounded-lg border border-border">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-3 bg-secondary px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          <span>Item</span>
-          <span className="text-right">Weight</span>
-          <span className="text-right">Rate</span>
-          <span className="text-right">Total</span>
+        <div className="grid grid-cols-[minmax(0,1fr)_3.5rem_4.75rem_5.5rem]">
+          {/* Header row — same grid columns as every data row below. */}
+          <div className="bg-secondary px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Item</div>
+          <div className="bg-secondary px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Qty</div>
+          <div className="bg-secondary px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Rate</div>
+          <div className="bg-secondary px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Total</div>
+
+          {order.items.map((it, i) => {
+            const isPiece = it.pricingMode === 'per_piece';
+            return (
+              <div key={i} className="contents">
+                <div className="min-w-0 border-t border-border px-3 py-2.5">
+                  <div className="truncate text-sm font-medium">{it.description}</div>
+                  <div className="truncate text-xs text-muted-foreground">{it.categoryName}</div>
+                </div>
+                <div className="flex items-center justify-end border-t border-border px-3 py-2.5 text-right text-xs tabular-nums">
+                  {isPiece ? `${it.pieceCount ?? 0} pcs` : fmtKg(it.weightKg)}
+                </div>
+                <div className="flex items-center justify-end border-t border-border px-3 py-2.5 text-right text-xs tabular-nums">
+                  {isPiece ? (
+                    <MoneyAmount amount={it.ratePerPiece ?? 0} unit="pc" />
+                  ) : (
+                    <MoneyAmount amount={it.ratePerKg} />
+                  )}
+                </div>
+                <div className="flex items-center justify-end border-t border-border px-3 py-2.5 text-right text-sm font-medium tabular-nums">
+                  <MoneyAmount amount={it.subtotal} />
+                </div>
+              </div>
+            );
+          })}
         </div>
-        {order.items.map((it, i) => (
-          <div
-            key={i}
-            className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-3 border-t border-border px-3 py-2.5"
-          >
-            <div className="min-w-0">
-              <div className="truncate text-sm font-medium">{it.description}</div>
-              <div className="truncate text-xs text-muted-foreground">{it.categoryName}</div>
-            </div>
-            <span className="self-center text-right text-xs tabular-nums">{fmtKg(it.weightKg)}</span>
-            <span className="self-center text-right text-xs tabular-nums">{fmtMoney(it.ratePerKg)}</span>
-            <span className="self-center text-right text-sm font-medium tabular-nums">{fmtMoney(it.subtotal)}</span>
-          </div>
-        ))}
       </div>
 
-      {/* Totals — "Total paid" not "amount due" */}
+      {/* Totals — "Total paid" not "amount due". Weight line omitted for
+          piece-only orders (totalWeightKg=0). */}
       <div className="space-y-2">
-        <div className="flex justify-between text-xs text-muted-foreground">
-          <span>Total weight</span>
-          <span className="tabular-nums">{fmtKg(order.totalWeightKg)}</span>
-        </div>
+        {order.totalWeightKg > 0 && (
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>Total weight</span>
+            <span className="tabular-nums">{fmtKg(order.totalWeightKg)}</span>
+          </div>
+        )}
         <div className="flex items-baseline justify-between border-t border-border pt-3">
           <span className="text-sm font-medium">Total paid</span>
-          <span className="text-2xl font-semibold tabular-nums">{fmtMoney(order.totalAmount)}</span>
+          <MoneyAmount amount={order.totalAmount} className="text-2xl font-semibold" />
         </div>
       </div>
 

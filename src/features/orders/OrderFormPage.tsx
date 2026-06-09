@@ -275,21 +275,19 @@ export function OrderFormPage() {
       if (multiFlyer) {
         const cur = it.flyerSplits ?? [];
         const byId = new Map(cur.map((s) => [s.flyerId, s]));
-        const next: FlyerSplit[] = pickedFlyerIds.map((fid, idx) => {
+        const next: FlyerSplit[] = pickedFlyerIds.map((fid) => {
           const ex = byId.get(fid);
           if (ex) {
+            // Preserve any value the owner already entered for this flyer.
             return isPiece
               ? { flyerId: fid, pieceCount: ex.pieceCount }
               : { flyerId: fid, weightKg: ex.weightKg };
           }
-          if (idx === 0 && cur.length === 0) {
-            // 1→2 transition: migrate the single-flyer holder (resolved to
-            // the customer qty when blank) into the first flyer's cell.
-            return isPiece
-              ? { flyerId: fid, pieceCount: it.flyerPieceCount ?? it.pieceCount ?? 0 }
-              : { flyerId: fid, weightKg: it.flyerWeightKg ?? it.weightKg ?? 0 };
-          }
-          // Additional / newly-picked flyers start blank (carry 0).
+          // Newly-picked flyers (incl. flyer A on the 1→2 transition) start
+          // BLANK (undefined) — the owner allocates each from zero, so the
+          // grid never implies the splits must sum to the customer qty.
+          // Blank materializes as 0 at submit (materializer does Number(..)
+          // || 0), so a flyer left blank carries 0 of this item — intended.
           return isPiece ? { flyerId: fid, pieceCount: undefined } : { flyerId: fid, weightKg: undefined };
         });
         const same =
@@ -923,6 +921,29 @@ export function OrderFormPage() {
                           );
                         })}
                       </div>
+                      {/* Billed-vs-paid line — informational. Surfaces the
+                          margin: customer (billed) qty vs the summed flyer
+                          (paid) portions. A mismatch is the intended "bill
+                          more, pay flyers less" lever, NOT an error — no
+                          validation, never blocks save. */}
+                      {(() => {
+                        const isPiece = item?.pricingMode === 'per_piece';
+                        const splits = item?.flyerSplits ?? [];
+                        const billedQty = isPiece
+                          ? Number(item?.pieceCount) || 0
+                          : Number(item?.weightKg) || 0;
+                        const paidQty = splits.reduce(
+                          (s, sp) =>
+                            s + (isPiece ? Number(sp.pieceCount) || 0 : Number(sp.weightKg) || 0),
+                          0,
+                        );
+                        const unit = isPiece ? 'pcs' : 'kg';
+                        return (
+                          <p className="text-[11px] text-muted-foreground">
+                            billed {billedQty} {unit} · flyers {paidQty} {unit}
+                          </p>
+                        );
+                      })()}
                     </div>
                   )}
                   <div className="flex items-center justify-end gap-2 text-sm">

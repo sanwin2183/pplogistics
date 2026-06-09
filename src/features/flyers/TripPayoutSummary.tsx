@@ -108,12 +108,13 @@ export const TripPayoutSummary = forwardRef<HTMLDivElement, TripPayoutSummaryPro
               orders.map((o) => {
                 const assignmentList = findAssignmentsForFlyer(o, flyerId);
                 if (assignmentList.length === 0) return null;
-                // FLYER-side per-category breakdown (2026-06-07 split).
-                // This document is the flyer's payment confirmation /
-                // receipt — it must NEVER show customer-side weight.
-                // Even when the two differ, the flyer sees only what
-                // they were paid on, never what the customer was billed.
-                const groups = groupItemsByCategoryFlyerKg(o.items);
+                // THIS FLYER'S per-category breakdown (per-item per-flyer
+                // split, 2026-06-09). This document is the flyer's payment
+                // confirmation / receipt — it must NEVER show customer-side
+                // weight, and on a split order it shows only this flyer's
+                // portion (e.g. A's 20 kg, never B's 15 kg or the 35 kg
+                // the customer was billed).
+                const groups = groupItemsByCategoryFlyerKg(o.items, flyerId);
 
                 // Combined order totals — FLYER kg for header + the
                 // stored assignment.payoutAmount for money. Falls back
@@ -154,8 +155,8 @@ export const TripPayoutSummary = forwardRef<HTMLDivElement, TripPayoutSummaryPro
                             <li key={`${o.id}-item-${idx}`} className="list-disc list-inside">
                               <span className="tabular-nums">
                                 {isPiece
-                                  ? `${getFlyerPieceCount(it)} pcs`
-                                  : fmtKg(getFlyerWeightKg(it))}
+                                  ? `${getFlyerPieceCount(it, flyerId)} pcs`
+                                  : fmtKg(getFlyerWeightKg(it, flyerId))}
                               </span>
                               {' '}
                               <span>{it.categoryName}</span>
@@ -234,7 +235,7 @@ export const TripPayoutSummary = forwardRef<HTMLDivElement, TripPayoutSummaryPro
                       {perPieceItems.length > 0 && (
                         <div className="space-y-0.5 rounded-sm bg-muted/30 px-2 py-1.5">
                           {perPieceItems.map((it, pi) => {
-                            const count = getFlyerPieceCount(it);
+                            const count = getFlyerPieceCount(it, flyerId);
                             const rate = it.flyerRatePerPiece ?? 0;
                             const subtotal = count * rate;
                             return (

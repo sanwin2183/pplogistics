@@ -47,48 +47,64 @@ export function calcTotalWeight(items: OrderItem[]): number {
   return items.reduce((s, it) => s + (it.weightKg || 0), 0);
 }
 
-// ---------------- Flyer-quantity helpers (added 2026-06-07) ----------------
+// ----------- Flyer-quantity helpers (per-item per-flyer splits) -----------
 //
-// Each item carries TWO quantities post-split: the customer-side
-// (`weightKg` or `pieceCount`, what the customer was billed for) and
-// the flyer-side (`flyerWeightKg` or `flyerPieceCount`, what the flyer
-// actually carries and is paid on). The latter is OPTIONAL with a
-// fallback to the former — blank means "same as customer", so most
-// orders carry no override.
+// Each item's flyer-side quantity is allocated PER FLYER via
+// `item.flyerSplits` (added 2026-06-09). A flyer's portion of an item is
+// `flyerSplits.find(flyerId)?.weightKg` (or pieceCount). The customer
+// quantity (top-level `weightKg` / `pieceCount`) is independent — splits
+// do NOT have to sum to it.
 //
-// IMPORTANT: per-piece items always contribute 0 to flyer-kg
-// regardless of any (mis-)set flyerWeightKg — capacity tracking
-// excludes per-piece items by design. The mode guard inside
-// getFlyerWeightKg enforces this defensively. Same idea on the piece
-// side: getFlyerPieceCount returns 0 for per-kg items.
+// LEGACY FALLBACK (the single most important invariant here): when
+// `flyerSplits` is ABSENT, the accessor returns the SAME number
+// regardless of `flyerId` — it reads the deprecated single
+// `flyerWeightKg` / `flyerPieceCount`, then the customer quantity. This
+// preserves the pre-2026-06-09 whole-order behaviour for legacy data:
+//   - single-flyer legacy order → correct (one flyer, one quantity)
+//   - multi-flyer legacy order  → retains its documented over-count
+//     (each flyer reads the full order quantity). Frozen historical
+//     data; deliberately NOT auto-migrated.
+//
+// IMPORTANT: per-piece items always contribute 0 to flyer-kg, and per-kg
+// items contribute 0 to flyer-pieces — enforced by the mode guards below
+// regardless of any (mis-)set split value.
 
 /**
- * Effective flyer-side weight for one item. Used for:
+ * This flyer's flyer-side weight for one item. Used for:
  *   - flyer.kgUsed deltas (via assignment.flyerWeightKg denorm)
  *   - per-kg payout math (category kg × ratePerKg)
- *   - the form's capacity-left hint
+ *   - the form's per-flyer capacity-left hint
  *
  * For per-piece items returns 0 — they don't consume capacity.
  */
-export function getFlyerWeightKg(item: OrderItem): number {
+export function getFlyerWeightKg(item: OrderItem, flyerId: string): number {
   if (isPerPieceItem(item)) return 0;
-  return item.flyerWeightKg ?? item.weightKg ?? 0;
+  if (item.flyerSplits) {
+    return Number(item.flyerSplits.find((s) => s.flyerId === flyerId)?.weightKg) || 0;
+  }
+  // LEGACY fallback — same number for every flyerId (see header note).
+  return Number(item.flyerWeightKg ?? item.weightKg) || 0;
 }
 
 /**
- * Effective flyer-side piece count for one item. Used for per-piece
+ * This flyer's flyer-side piece count for one item. Used for per-piece
  * payout math (pieceCount × flyerRatePerPiece). For per-kg items
  * returns 0 — they have no piece concept.
  */
-export function getFlyerPieceCount(item: OrderItem): number {
+export function getFlyerPieceCount(item: OrderItem, flyerId: string): number {
   if (!isPerPieceItem(item)) return 0;
-  return item.flyerPieceCount ?? item.pieceCount ?? 0;
+  if (item.flyerSplits) {
+    return Number(item.flyerSplits.find((s) => s.flyerId === flyerId)?.pieceCount) || 0;
+  }
+  // LEGACY fallback — same number for every flyerId (see header note).
+  return Number(item.flyerPieceCount ?? item.pieceCount) || 0;
 }
 
-/** Σ flyer-side kg across all items. Capacity-tracking equivalent of
- *  calcTotalWeight; per-piece items naturally contribute 0. */
-export function calcTotalFlyerWeight(items: OrderItem[]): number {
-  return items.reduce((s, it) => s + getFlyerWeightKg(it), 0);
+/** Σ a single flyer's flyer-side kg across all items. Capacity-tracking
+ *  equivalent of calcTotalWeight scoped to one flyer; per-piece items
+ *  naturally contribute 0. */
+export function calcTotalFlyerWeight(items: OrderItem[], flyerId: string): number {
+  return items.reduce((s, it) => s + getFlyerWeightKg(it, flyerId), 0);
 }
 
 /**
@@ -127,10 +143,11 @@ export function groupItemsByCategory(
 }
 
 /**
- * Parallel to groupItemsByCategory but sums FLYER-side kg per category
- * (via getFlyerWeightKg). This is the function flyer-payout math + the
- * flyer-facing per-category breakdown displays should read — never
- * groupItemsByCategory.
+ * Parallel to groupItemsByCategory but sums ONE FLYER'S flyer-side kg
+ * per category (via getFlyerWeightKg(it, flyerId)). This is the function
+ * flyer-payout math + the flyer-facing per-category breakdown displays
+ * should read — never groupItemsByCategory. Pass the assignment's
+ * flyerId so each flyer's breakdown reflects only their own portion.
  *
  * Same exclusion rules: items without a categoryId or in per-piece
  * mode are skipped. The two helpers stay byte-for-byte parallel except
@@ -138,12 +155,13 @@ export function groupItemsByCategory(
  */
 export function groupItemsByCategoryFlyerKg(
   items: OrderItem[],
+  flyerId: string,
 ): Array<{ categoryId: string; categoryName: string; weightKg: number }> {
   const byId = new Map<string, { categoryId: string; categoryName: string; weightKg: number }>();
   for (const it of items) {
     if (!it.categoryId) continue;
     if (isPerPieceItem(it)) continue;
-    const kg = getFlyerWeightKg(it);
+    const kg = getFlyerWeightKg(it, flyerId);
     const existing = byId.get(it.categoryId);
     if (existing) {
       existing.weightKg += kg;
@@ -185,13 +203,14 @@ export function calcAssignmentPayout(
 ): number {
   let total = 0;
 
-  // Per-kg side — categoryRates × FLYER kg per category.
-  // 2026-06-07 split: switched from groupItemsByCategory (customer kg)
-  // to groupItemsByCategoryFlyerKg (flyer kg) so payout reflects what
-  // the flyer actually flew. Orders with no flyerWeightKg overrides
-  // fall through to customer weight (via getFlyerWeightKg).
+  // Per-kg side — categoryRates × THIS FLYER'S kg per category. Scoped
+  // to assignment.flyerId via groupItemsByCategoryFlyerKg so each flyer
+  // is paid only on their own split portion (per-item per-flyer split,
+  // 2026-06-09). Orders with no flyerSplits fall through to the legacy
+  // single-quantity fallback inside getFlyerWeightKg. The caller
+  // signature is unchanged — flyerId comes from the assignment itself.
   if (assignment.categoryRates && assignment.categoryRates.length > 0) {
-    const groups = groupItemsByCategoryFlyerKg(items);
+    const groups = groupItemsByCategoryFlyerKg(items, assignment.flyerId);
     const kgByCategoryId = new Map(groups.map((g) => [g.categoryId, g.weightKg]));
     total += assignment.categoryRates.reduce(
       (s, cr) => s + (kgByCategoryId.get(cr.categoryId) ?? 0) * (cr.ratePerKg || 0),
@@ -206,10 +225,11 @@ export function calcAssignmentPayout(
   }
 
   // Per-piece side — accrue every per-piece item's flyer payout, on
-  // FLYER pieces (via getFlyerPieceCount, falls back to pieceCount).
+  // THIS FLYER'S pieces (getFlyerPieceCount(it, assignment.flyerId),
+  // falls back to the legacy single count).
   for (const it of items) {
     if (isPerPieceItem(it)) {
-      total += getFlyerPieceCount(it) * (it.flyerRatePerPiece ?? 0);
+      total += getFlyerPieceCount(it, assignment.flyerId) * (it.flyerRatePerPiece ?? 0);
     }
   }
 

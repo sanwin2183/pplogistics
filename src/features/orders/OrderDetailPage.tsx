@@ -34,7 +34,7 @@ import { useFlyer } from '../flyers/useFlyers';
 import { useSettings } from '../settings/useSettings';
 import { OrderStatusTimeline } from './OrderStatusTimeline';
 import { getFlyerPieceCount, getFlyerWeightKg } from './orderHelpers';
-import type { Order, PaymentProof } from '../../types';
+import type { Order, OrderItem, FlyerAssignment, PaymentProof } from '../../types';
 
 /**
  * Resolve a stored PaymentProof to a renderable image URL.
@@ -499,20 +499,18 @@ export function OrderDetailPage() {
                   <div className="text-xs text-muted-foreground">
                     {it.pricingMode === 'per_piece' ? (
                       <>
-                        {it.categoryName} · <ItemQtyHybrid
-                          customer={it.pieceCount ?? 0}
-                          flyer={getFlyerPieceCount(it)}
-                          unit="pcs"
-                          fmt={(n) => `${n} ${n === 1 ? 'piece' : 'pieces'}`}
+                        {it.categoryName} · <ItemFlyerQty
+                          item={it}
+                          assignments={order.flyerAssignments}
+                          isPiece
                         /> · {fmtMoney(it.ratePerPiece ?? 0)}/piece
                       </>
                     ) : (
                       <>
-                        {it.categoryName} · <ItemQtyHybrid
-                          customer={it.weightKg}
-                          flyer={getFlyerWeightKg(it)}
-                          unit="kg"
-                          fmt={fmtKg}
+                        {it.categoryName} · <ItemFlyerQty
+                          item={it}
+                          assignments={order.flyerAssignments}
+                          isPiece={false}
                         /> · {fmtMoney(it.ratePerKg)}/kg
                       </>
                     )}
@@ -546,7 +544,7 @@ export function OrderDetailPage() {
                   ? a.categoryRates!.map((cr) => {
                       const kg = order.items
                         .filter((it) => it.categoryId === cr.categoryId)
-                        .reduce((s, it) => s + getFlyerWeightKg(it), 0);
+                        .reduce((s, it) => s + getFlyerWeightKg(it, a.flyerId), 0);
                       const categoryName =
                         order.items.find((it) => it.categoryId === cr.categoryId)?.categoryName ?? cr.categoryId;
                       return {
@@ -823,32 +821,66 @@ export function OrderDetailPage() {
 }
 
 /**
- * Customer-vs-flyer qty renderer for the Items section. Shows BOTH when
- * the two values differ (e.g. "21 kg billed (20 kg flown)"), collapses
- * to a single value when they match — the common case before any
- * flyer-side override is set.
+ * Customer-vs-flyer qty renderer for the Items section. Handles the full
+ * per-item per-flyer split:
+ *   - 0 flyers          → just the customer qty.
+ *   - 1 flyer, equal    → single value (the common case, no override).
+ *   - 1 flyer, differ   → "21 kg billed (20 kg flown)".
+ *   - 2+ flyers         → "35 kg billed · flown: A 20 kg, B 15 kg".
+ *
+ * Reads each flyer's portion through getFlyerWeightKg / getFlyerPieceCount
+ * (flyerId-scoped), so legacy orders (no flyerSplits) collapse to the
+ * single-flyer billed/flown pattern automatically.
  *
  * Used only on the admin order detail page; customer-facing surfaces
  * (Invoice/Receipt) never show flyer-side data per §11.
  */
-function ItemQtyHybrid({
-  customer,
-  flyer,
-  unit: _unit,
-  fmt,
+function ItemFlyerQty({
+  item,
+  assignments,
+  isPiece,
 }: {
-  customer: number;
-  flyer: number;
-  unit: string;
-  fmt: (n: number) => string;
+  item: OrderItem;
+  assignments: FlyerAssignment[];
+  isPiece: boolean;
 }) {
-  const epsilon = _unit === 'kg' ? 0.005 : 0.5; // 0.5 piece tolerance for ints
-  if (Math.abs(customer - flyer) < epsilon) {
-    return <>{fmt(customer)}</>;
+  const fmt = isPiece ? (n: number) => `${n} ${n === 1 ? 'piece' : 'pieces'}` : fmtKg;
+  const epsilon = isPiece ? 0.5 : 0.005;
+  const customer = isPiece ? item.pieceCount ?? 0 : item.weightKg;
+  const qtyFor = (flyerId: string) =>
+    isPiece ? getFlyerPieceCount(item, flyerId) : getFlyerWeightKg(item, flyerId);
+
+  // Distinct flyers on the order (a flyer can appear twice on legacy
+  // per-category-rate orders; collapse to one column each).
+  const flyers: FlyerAssignment[] = [];
+  const seen = new Set<string>();
+  for (const a of assignments) {
+    if (a.flyerId && !seen.has(a.flyerId)) {
+      seen.add(a.flyerId);
+      flyers.push(a);
+    }
   }
+
+  if (flyers.length <= 1) {
+    if (flyers.length === 0) return <>{fmt(customer)}</>;
+    const flown = qtyFor(flyers[0].flyerId);
+    if (Math.abs(customer - flown) < epsilon) return <>{fmt(customer)}</>;
+    return (
+      <>
+        {fmt(customer)} billed <span className="text-muted-foreground">({fmt(flown)} flown)</span>
+      </>
+    );
+  }
+
   return (
     <>
-      {fmt(customer)} billed <span className="text-muted-foreground">({fmt(flyer)} flown)</span>
+      {fmt(customer)} billed{' '}
+      <span className="text-muted-foreground">
+        · flown:{' '}
+        {flyers
+          .map((a) => `${a.flyerName.split(' ')[0]} ${fmt(qtyFor(a.flyerId))}`)
+          .join(', ')}
+      </span>
     </>
   );
 }

@@ -241,12 +241,12 @@ export function TripCard({ categorized, mode }: TripCardProps) {
 function OrderRow({ order, flyerId }: { order: Order; flyerId: string }) {
   const assignmentList = findAssignmentsForFlyer(order, flyerId);
   if (assignmentList.length === 0) return null;
-  // FLYER-side per-category breakdown — this view is the flyer's
-  // payment math, never the customer's billed math (2026-06-07 split).
-  // groupItemsByCategoryFlyerKg sums getFlyerWeightKg per category;
-  // for orders with no override it returns the same numbers as
-  // groupItemsByCategory, so legacy orders look unchanged.
-  const groups = groupItemsByCategoryFlyerKg(order.items);
+  // THIS FLYER'S per-category breakdown — this view is the flyer's
+  // payment math, never the customer's billed math. Scoped to flyerId
+  // so a split order shows only this flyer's portion (per-item per-flyer
+  // split, 2026-06-09). Legacy orders (no flyerSplits) fall back to the
+  // single quantity, so they look unchanged.
+  const groups = groupItemsByCategoryFlyerKg(order.items, flyerId);
 
   // Order header weight — FLYER-side total. Falls back to a.weightKg
   // for legacy assignments via a.flyerWeightKg ?? a.weightKg.
@@ -349,7 +349,7 @@ function OrderRow({ order, flyerId }: { order: Order; flyerId: string }) {
         {perPieceItems.length > 0 && (
           <div className="space-y-1 rounded-md bg-muted/30 px-3 py-2">
             {perPieceItems.map((it, pi) => {
-              const count = getFlyerPieceCount(it);
+              const count = getFlyerPieceCount(it, flyerId);
               const rate = it.flyerRatePerPiece ?? 0;
               const subtotal = count * rate;
               return (

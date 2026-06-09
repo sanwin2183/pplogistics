@@ -110,11 +110,12 @@ async function main(): Promise<void> {
     }
 
     // Flyer side — sum every assignment's FLYER-side kg into its
-    // flyer's bucket. Post 2026-06-07 split: source is flyerWeightKg
-    // (denormalised flyer-side total set by the form at submit),
-    // falling back to weightKg for legacy assignments where the new
-    // field is absent. Must match the read used by useCreateOrder /
-    // useDeleteOrder so this recompute lands on the same number.
+    // flyer's bucket. Source is flyerWeightKg — now THIS FLYER'S portion
+    // (Σ of their per-item splits) set by the form at submit — falling
+    // back to weightKg for legacy assignments where the new field is
+    // absent. Must match the read used by useCreateOrder /
+    // useDeleteOrder byte-for-byte so this recompute lands on the same
+    // number (#1 data hazard).
     const assignments: Array<Record<string, unknown>> = Array.isArray(o.flyerAssignments)
       ? (o.flyerAssignments as Array<Record<string, unknown>>)
       : [];

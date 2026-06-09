@@ -318,7 +318,7 @@ export function flyerPayoutsToCsv(orders: Order[], flyers: Flyer[]): string {
             .map((cr) => {
               const kg = o.items
                 .filter((it) => it.categoryId === cr.categoryId && it.pricingMode !== 'per_piece')
-                .reduce((s, it) => s + getFlyerWeightKg(it), 0);
+                .reduce((s, it) => s + getFlyerWeightKg(it, a.flyerId), 0);
               const name =
                 o.items.find((it) => it.categoryId === cr.categoryId)?.categoryName ?? cr.categoryId;
               return `${name}:${kg}kg@${cr.ratePerKg}`;
@@ -329,7 +329,7 @@ export function flyerPayoutsToCsv(orders: Order[], flyers: Flyer[]): string {
         .filter((it) => it.pricingMode === 'per_piece')
         .map((it) => {
           const name = it.description || it.categoryName;
-          return `${name}:${getFlyerPieceCount(it)}pcs@${it.flyerRatePerPiece ?? 0}`;
+          return `${name}:${getFlyerPieceCount(it, a.flyerId)}pcs@${it.flyerRatePerPiece ?? 0}`;
         })
         .join(MULTI_SEP);
       rows.push({

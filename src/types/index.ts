@@ -123,34 +123,66 @@ export interface OrderItem {
   ratePerPiece?: number;
   /** Per-piece side, INTERNAL (stripped by getTrackingOrder). What we
    *  pay the flyer per piece for this item. Required when pricingMode
-   *  === 'per_piece'. */
+   *  === 'per_piece'. Now consumed only by the matching flyer's split
+   *  portion (getFlyerPieceCount(item, flyerId) × this rate). */
   flyerRatePerPiece?: number;
   /**
-   * Flyer-side weight for capacity (flyer.kgUsed) + per-kg payout math.
-   * INTERNAL — stripped from the public tracking surface per §11
+   * NEW canonical flyer-side allocation (per-item per-flyer splits,
+   * added 2026-06-09). One entry per flyer who carries some of this
+   * item. INTERNAL — stripped from the public tracking surface per §11
    * (customer must never see what the flyer carried vs what they were
    * billed for).
    *
-   * Fallback semantics: absent ⇒ flyer kg == customer weightKg. The
-   * common case (flyer carried exactly what the customer paid for)
-   * needs no extra data; only orders where the flyer carried a
-   * different amount than what was billed populate this.
+   * Per-kg items populate `weightKg` on each entry; per-piece items
+   * populate `pieceCount`. A flyer not present in the list (or present
+   * with a blank value) carries 0 of this item — see getFlyerWeightKg /
+   * getFlyerPieceCount, where `flyerSplits present ⇒ entry?.value ?? 0`.
    *
-   * Per-piece items ignore this field on read (capacity tracking
-   * already excludes per-piece items by design; getFlyerWeightKg
-   * returns 0 for per-piece items regardless of this value).
+   * Splits are INDEPENDENT of the customer quantity: Σ of every flyer's
+   * portion does NOT have to equal top-level `weightKg` / `pieceCount`.
+   * Each portion is purely what we pay that flyer. There is deliberately
+   * no sum-to-customer validation.
+   *
+   * Absent ⇒ legacy order: readers fall through to the deprecated
+   * `flyerWeightKg` / `flyerPieceCount` (then to the customer quantity),
+   * which returns the SAME number regardless of flyerId. That preserves
+   * today's whole-order behaviour for legacy data: single-flyer legacy
+   * orders read correctly; multi-flyer legacy orders keep their
+   * documented over-count (frozen historical data, not auto-migrated).
+   */
+  flyerSplits?: FlyerSplit[];
+  /**
+   * @deprecated Single order-global flyer-side weight (pre 2026-06-09).
+   * READ-ONLY legacy fallback — only consulted when `flyerSplits` is
+   * absent. New orders write `flyerSplits` instead and never set this.
+   * INTERNAL (stripped by getTrackingOrder per §11). Per-piece items
+   * ignore it on read (getFlyerWeightKg returns 0 for per-piece).
    */
   flyerWeightKg?: number;
   /**
-   * Flyer-side piece count for per-piece payout math. INTERNAL —
-   * stripped by getTrackingOrder per §11 alongside flyerRatePerPiece.
-   *
-   * Fallback semantics: absent ⇒ flyer pieces == customer pieceCount.
-   * Only meaningful when pricingMode === 'per_piece'.
+   * @deprecated Single order-global flyer-side piece count (pre
+   * 2026-06-09). READ-ONLY legacy fallback — only consulted when
+   * `flyerSplits` is absent. New orders write `flyerSplits` instead.
+   * INTERNAL (stripped by getTrackingOrder per §11).
    */
   flyerPieceCount?: number;
   /** Canonical stored money number — pre-computed at write time. */
   subtotal: number;
+}
+
+/**
+ * One flyer's allocated portion of a single OrderItem (the per-item
+ * per-flyer split added 2026-06-09). Lives in `OrderItem.flyerSplits`.
+ *
+ * `weightKg` is set for per-kg items; `pieceCount` for per-piece items.
+ * Both are optional so the shape stays minimal per mode (Firebase SDK
+ * v11 rejects literal `undefined`, so the form writes only the field
+ * that applies and omits the other). A missing field reads as 0.
+ */
+export interface FlyerSplit {
+  flyerId: string;
+  weightKg?: number;
+  pieceCount?: number;
 }
 
 /**
@@ -186,17 +218,8 @@ export interface CategoryRate {
  *     - rendered as per-category rows on the detail page
  *
  * `weightKg` stays per-assignment in both shapes — it's what's used for
- * the flyer capacity-left calc (sum across all assignments to a flyer
- * compared to flyer.kgAvailable).
- *
- * Known trade-off for split orders (one order across multiple flyers):
- *   New assignments default `weightKg` to the order's total weight (since
- *   per-row kg comes from the order, not the assignment), so two
- *   assignments on the same order each appear to consume the full order
- *   weight in the capacity-left view, and each computes payout against
- *   full order kg. This optimises for the common single-flyer case at
- *   the cost of over-counting splits. Splits already require manual
- *   bookkeeping; the user accepted this trade-off.
+ * the customer-side billed display + the dashboard's revenueByRoute
+ * customer basis (NOT capacity; see flyerWeightKg).
  *
  * `payoutAmount` is the universal "what we owe this flyer for this
  * assignment" number — always written by the form on save, no client
@@ -206,23 +229,25 @@ export interface FlyerAssignment {
   flyerId: string;
   flyerName: string;
   /**
-   * CUSTOMER-side denormalised total weight for this assignment.
-   * STAYS customer weight after the 2026-06-07 flyer-quantity split —
-   * existing display readers + the dashboard's revenueByRoute
-   * apportionment still want this basis. Capacity (kgUsed) reads
-   * `flyerWeightKg ?? weightKg` instead, so legacy assignments
-   * automatically fall through to this value.
+   * CUSTOMER-side denormalised total weight for this assignment — the
+   * order's customer total, the SAME on every assignment of an order.
+   * Used for the billed display and the dashboard revenueByRoute
+   * fallback. NOT the capacity basis. Capacity (kgUsed) reads
+   * `flyerWeightKg ?? weightKg`, so legacy assignments (no flyerWeightKg)
+   * fall through to this value.
    */
   weightKg: number;
   /**
-   * FLYER-side denormalised total weight for this assignment — sum of
-   * every per-kg item's flyer-side kg. Set by the form at submit so
-   * the create/delete transactions can update flyer.kgUsed without
-   * walking items[]. Absent on legacy (pre 2026-06-07) assignments;
-   * every kgUsed reader falls back to `weightKg` in that case.
+   * FLYER-side denormalised weight for this assignment — THIS FLYER'S
+   * portion only, i.e. Σ over items of getFlyerWeightKg(item, flyerId)
+   * (per-item per-flyer split, redefined 2026-06-09). Set by the form
+   * at submit so the create/delete transactions + recomputeRollups can
+   * update flyer.kgUsed without walking items[]. Two flyers on one order
+   * now each carry only their own portion — no more over-count.
    *
-   * Same single-flyer-optimised trade-off as weightKg: each assignment
-   * in a multi-flyer split claims the full flyer-side total.
+   * Absent on legacy (pre 2026-06-07) assignments; every kgUsed reader
+   * falls back to `weightKg` in that case, so an order created before
+   * this change reverses on the same basis it was created on.
    */
   flyerWeightKg?: number;
   /** LEGACY — single flat rate. New assignments omit this; old ones keep it for display. */

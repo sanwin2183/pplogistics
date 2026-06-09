@@ -108,9 +108,13 @@ export interface RouteRevenueSlice {
  * Phase 1).
  *
  * Single-assignment orders: 100% of revenue → that flyer's route.
- * Multi-flyer split orders: apportioned by per-assignment kg share,
- * falling back to an even split when totalKg === 0 (piece-only orders,
- * so we don't lose their revenue from the route view).
+ * Multi-flyer split orders: apportioned by each flyer's REAL flown kg
+ * share (a.flyerWeightKg — this flyer's portion post per-item per-flyer
+ * split, 2026-06-09), which is now accurate rather than the old
+ * customer-total proxy. Legacy assignments (no flyerWeightKg) fall back
+ * to a.weightKg — unchanged behaviour. Falls back to an even split when
+ * the total flown kg is 0 (piece-only orders, so we don't lose their
+ * revenue from the route view).
  */
 export function revenueByRoute(orders: Order[], flyers: Flyer[]): RouteRevenueSlice[] {
   const flyerMap = new Map(flyers.map((f) => [f.id, f]));
@@ -120,6 +124,8 @@ export function revenueByRoute(orders: Order[], flyers: Flyer[]): RouteRevenueSl
     'YGN→BKK': 0,
     'MDL→BKK': 0,
   };
+  // This flyer's flown kg for the share math, with the legacy fallback.
+  const flownKg = (a: Order['flyerAssignments'][number]) => a.flyerWeightKg ?? a.weightKg ?? 0;
   for (const o of orders) {
     if (o.status !== 'paid') continue;
     const assignments = o.flyerAssignments;
@@ -129,12 +135,12 @@ export function revenueByRoute(orders: Order[], flyers: Flyer[]): RouteRevenueSl
       if (f) totals[f.route] += o.totalAmount;
       continue;
     }
-    const totalKg = assignments.reduce((s, a) => s + (a.weightKg || 0), 0);
+    const totalKg = assignments.reduce((s, a) => s + flownKg(a), 0);
     for (const a of assignments) {
       const f = flyerMap.get(a.flyerId);
       if (!f) continue;
       const share =
-        totalKg > 0 ? (a.weightKg || 0) / totalKg : 1 / assignments.length;
+        totalKg > 0 ? flownKg(a) / totalKg : 1 / assignments.length;
       totals[f.route] += o.totalAmount * share;
     }
   }

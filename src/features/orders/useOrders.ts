@@ -153,12 +153,14 @@ export function useCreateOrder() {
 
         // ---- Phase 2: compute ----
         // Sum the FLYER-side kg assigned to each flyer in this order
-        // (collapses multi-row-same-flyer case into one delta). Post
-        // 2026-06-07 split: source is `assignment.flyerWeightKg` (the
-        // denormalised flyer-side total written by the form), falling
-        // back to `assignment.weightKg` for legacy assignments (pre-
-        // split) where flyerWeightKg is absent. Customer kg lives in
-        // `a.weightKg` and is no longer used for capacity.
+        // (collapses multi-row-same-flyer case into one delta). Source
+        // is `assignment.flyerWeightKg` — now THIS FLYER'S portion (Σ of
+        // their per-item splits), written by the form at submit. Falls
+        // back to `assignment.weightKg` ONLY for legacy assignments
+        // (pre-2026-06-07) where flyerWeightKg is absent, so an order
+        // created before the split feature reverses on delete using the
+        // SAME basis it was created on (#1 data hazard — this expression
+        // is byte-for-byte identical in useDeleteOrder + recomputeRollups).
         const kgByFlyer = new Map<string, number>();
         for (const a of input.flyerAssignments) {
           const flyerKg = a.flyerWeightKg ?? a.weightKg;
@@ -380,8 +382,11 @@ export function useDeleteOrder() {
 
         // ---- Phase 2: compute ----
         // Sum FLYER-side kg per unique flyer — must mirror the create
-        // math byte-for-byte so create + delete stay symmetric. Same
-        // fallback to a.weightKg for legacy (pre 2026-06-07) assignments.
+        // math byte-for-byte so create + delete stay symmetric (#1 data
+        // hazard). `a.flyerWeightKg` is now THIS FLYER'S portion; the
+        // `?? a.weightKg` fallback covers legacy (pre 2026-06-07)
+        // assignments so an order reverses on the same basis it was
+        // created on, across the legacy boundary.
         const kgByFlyer = new Map<string, number>();
         for (const a of order.flyerAssignments) {
           const flyerKg = a.flyerWeightKg ?? a.weightKg;

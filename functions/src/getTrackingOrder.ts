@@ -153,13 +153,19 @@ export const getTrackingOrder = onCall(
     // exposing it is fine per §11.
     //
     // FLYER-SIDE fields remain STRIPPED (none of these appear in the
-    // returned shape — additive omission, no per-field delete needed):
+    // returned shape — additive omission, no per-field delete needed.
+    // The item is rebuilt field-by-field below; the raw doc is NEVER
+    // spread, so any flyer-side field is excluded by omission):
     //   - flyerRatePerPiece (added 2026-05-29) — per-piece flyer rate.
-    //   - flyerWeightKg (added 2026-06-07) — per-item flyer-side kg
-    //     override. Customer must not see what the flyer carried vs
-    //     what they were billed for.
-    //   - flyerPieceCount (added 2026-06-07) — per-item flyer-side
-    //     piece-count override; same reasoning.
+    //   - flyerSplits (added 2026-06-09) — per-item per-flyer allocation
+    //     (each flyer's carried weightKg / pieceCount). The customer must
+    //     never see what any flyer carried vs what they were billed for,
+    //     nor how the order was split across carriers. MUST NOT be added
+    //     to the returned item object.
+    //   - flyerWeightKg (added 2026-06-07, now deprecated) — per-item
+    //     flyer-side kg override / legacy fallback.
+    //   - flyerPieceCount (added 2026-06-07, now deprecated) — per-item
+    //     flyer-side piece-count override / legacy fallback.
     //   - payoutRatePerKg / payoutAmount / categoryRates /
     //     flyerWeightKg on the assignment (the entire assignment[]
     //     is never copied to the response — only assignments[0].

@@ -10,7 +10,7 @@ import { MoneyDisplay } from '../../components/MoneyDisplay';
 import { Spinner } from '../../components/Spinner';
 import { fmtDate, fmtDateTime, fmtKg, fmtMoney } from '../../lib/formatters';
 import { ROUTE_LABELS } from '../../lib/status';
-import { getFlyerPieceCount, groupItemsByCategoryFlyerKg } from '../orders/orderHelpers';
+import { getFlyerPieceCount, getFlyerPieceRate, groupItemsByCategoryFlyerKg } from '../orders/orderHelpers';
 import { useSaveDocAsImage } from '../tracking/useSaveDocAsImage';
 import { useSettings } from '../settings/useSettings';
 import { findAssignmentsForFlyer } from './tripHelpers';
@@ -350,7 +350,7 @@ function OrderRow({ order, flyerId }: { order: Order; flyerId: string }) {
           <div className="space-y-1 rounded-md bg-muted/30 px-3 py-2">
             {perPieceItems.map((it, pi) => {
               const count = getFlyerPieceCount(it, flyerId);
-              const rate = it.flyerRatePerPiece ?? 0;
+              const rate = getFlyerPieceRate(it, flyerId);
               const subtotal = count * rate;
               return (
                 <div

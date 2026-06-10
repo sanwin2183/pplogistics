@@ -1,7 +1,7 @@
 import Papa from 'papaparse';
 import dayjs from 'dayjs';
 import { toDate } from '../../lib/formatters';
-import { getFlyerPieceCount, getFlyerWeightKg } from '../orders/orderHelpers';
+import { getFlyerPieceCount, getFlyerPieceRate, getFlyerWeightKg } from '../orders/orderHelpers';
 import type {
   Order,
   Customer,
@@ -329,7 +329,7 @@ export function flyerPayoutsToCsv(orders: Order[], flyers: Flyer[]): string {
         .filter((it) => it.pricingMode === 'per_piece')
         .map((it) => {
           const name = it.description || it.categoryName;
-          return `${name}:${getFlyerPieceCount(it, a.flyerId)}pcs@${it.flyerRatePerPiece ?? 0}`;
+          return `${name}:${getFlyerPieceCount(it, a.flyerId)}pcs@${getFlyerPieceRate(it, a.flyerId)}`;
         })
         .join(MULTI_SEP);
       rows.push({

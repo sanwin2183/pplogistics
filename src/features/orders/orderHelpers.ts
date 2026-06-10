@@ -100,6 +100,28 @@ export function getFlyerPieceCount(item: OrderItem, flyerId: string): number {
   return Number(item.flyerPieceCount ?? item.pieceCount) || 0;
 }
 
+/**
+ * This flyer's per-piece flyer rate (฿/piece) for one item — the
+ * per-flyer analog of assignment.categoryRates on the per-kg side, so
+ * flyer A and flyer B can be paid different rates for the same item.
+ * Used for per-piece payout math (pieceCount × ratePerPiece).
+ *
+ * Single fallback chokepoint: the matching flyerSplits entry's
+ * `ratePerPiece` wins; absent (legacy / single-flyer orders, or a split
+ * entry that predates the per-flyer rate) ⇒ the deprecated order-global
+ * `item.flyerRatePerPiece`. For per-kg items returns 0 (no piece rate).
+ * Number(...) || 0 guards the raw-string values RHF holds while editing.
+ */
+export function getFlyerPieceRate(item: OrderItem, flyerId: string): number {
+  if (!isPerPieceItem(item)) return 0;
+  if (item.flyerSplits) {
+    const s = item.flyerSplits.find((s) => s.flyerId === flyerId);
+    // Per-flyer rate wins; fall back to the legacy item-level rate.
+    return Number(s?.ratePerPiece ?? item.flyerRatePerPiece) || 0;
+  }
+  return Number(item.flyerRatePerPiece) || 0;
+}
+
 /** Σ a single flyer's flyer-side kg across all items. Capacity-tracking
  *  equivalent of calcTotalWeight scoped to one flyer; per-piece items
  *  naturally contribute 0. */
@@ -184,13 +206,12 @@ export function groupItemsByCategoryFlyerKg(
  *     (sum of per-kg items' weightKg for that categoryId) × rate.
  *   Legacy: assignment.weightKg × assignment.payoutRatePerKg.
  *
- * Per-piece side (new, added 2026-05-29):
- *   sum over (per-piece items) of pieceCount × flyerRatePerPiece.
- *   Each per-piece item carries its OWN flyer rate
- *   (`item.flyerRatePerPiece`) — not the assignment's. Multi-flyer
- *   orders share one rate per item across assignments by design;
- *   accept the same single-flyer-optimised trade-off the kg side
- *   already has for splits.
+ * Per-piece side:
+ *   sum over (per-piece items) of THIS FLYER'S pieceCount × THIS
+ *   FLYER'S ฿/piece — getFlyerPieceCount × getFlyerPieceRate, both
+ *   scoped to assignment.flyerId (per-flyer rate added 2026-06-10 on
+ *   flyerSplits[].ratePerPiece; legacy / single-flyer orders fall back
+ *   to the order-global item.flyerRatePerPiece inside getFlyerPieceRate).
  *
  * Returns the stored `payoutAmount` ONLY when neither per-kg shape
  * resolves AND no per-piece items exist. Defensive against future
@@ -225,11 +246,12 @@ export function calcAssignmentPayout(
   }
 
   // Per-piece side — accrue every per-piece item's flyer payout, on
-  // THIS FLYER'S pieces (getFlyerPieceCount(it, assignment.flyerId),
-  // falls back to the legacy single count).
+  // THIS FLYER'S pieces × THIS FLYER'S rate
+  // (getFlyerPieceCount / getFlyerPieceRate, both scoped to
+  // assignment.flyerId; each falls back to the legacy item-level value).
   for (const it of items) {
     if (isPerPieceItem(it)) {
-      total += getFlyerPieceCount(it, assignment.flyerId) * (it.flyerRatePerPiece ?? 0);
+      total += getFlyerPieceCount(it, assignment.flyerId) * getFlyerPieceRate(it, assignment.flyerId);
     }
   }
 

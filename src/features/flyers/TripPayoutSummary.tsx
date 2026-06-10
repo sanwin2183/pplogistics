@@ -2,7 +2,7 @@ import { forwardRef } from 'react';
 import { Plane } from 'lucide-react';
 import { fmtDate, fmtDateTime, fmtKg, fmtMoney } from '../../lib/formatters';
 import { ROUTE_LABELS } from '../../lib/status';
-import { getFlyerPieceCount, getFlyerWeightKg, groupItemsByCategoryFlyerKg } from '../orders/orderHelpers';
+import { getFlyerPieceCount, getFlyerPieceRate, getFlyerWeightKg, groupItemsByCategoryFlyerKg } from '../orders/orderHelpers';
 import { findAssignmentsForFlyer } from './tripHelpers';
 import type { BusinessInfo, Order, Route, FsTs } from '../../types';
 
@@ -236,7 +236,7 @@ export const TripPayoutSummary = forwardRef<HTMLDivElement, TripPayoutSummaryPro
                         <div className="space-y-0.5 rounded-sm bg-muted/30 px-2 py-1.5">
                           {perPieceItems.map((it, pi) => {
                             const count = getFlyerPieceCount(it, flyerId);
-                            const rate = it.flyerRatePerPiece ?? 0;
+                            const rate = getFlyerPieceRate(it, flyerId);
                             const subtotal = count * rate;
                             return (
                               <div

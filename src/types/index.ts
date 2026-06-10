@@ -121,10 +121,15 @@ export interface OrderItem {
   pieceCount?: number;
   /** Per-piece side. Required when pricingMode === 'per_piece'. */
   ratePerPiece?: number;
-  /** Per-piece side, INTERNAL (stripped by getTrackingOrder). What we
-   *  pay the flyer per piece for this item. Required when pricingMode
-   *  === 'per_piece'. Now consumed only by the matching flyer's split
-   *  portion (getFlyerPieceCount(item, flyerId) × this rate). */
+  /**
+   * @deprecated Order-global per-piece flyer rate (one value shared by
+   * every flyer). READ-ONLY legacy / single-flyer fallback — only
+   * consulted when the matching `flyerSplits` entry has no `ratePerPiece`.
+   * New multi-flyer orders carry the rate PER FLYER on
+   * `flyerSplits[].ratePerPiece` instead, so flyer A and flyer B can be
+   * paid different ฿/piece for the same item. INTERNAL (stripped by
+   * getTrackingOrder per §11). Read it only through getFlyerPieceRate.
+   */
   flyerRatePerPiece?: number;
   /**
    * NEW canonical flyer-side allocation (per-item per-flyer splits,
@@ -174,15 +179,22 @@ export interface OrderItem {
  * One flyer's allocated portion of a single OrderItem (the per-item
  * per-flyer split added 2026-06-09). Lives in `OrderItem.flyerSplits`.
  *
- * `weightKg` is set for per-kg items; `pieceCount` for per-piece items.
- * Both are optional so the shape stays minimal per mode (Firebase SDK
- * v11 rejects literal `undefined`, so the form writes only the field
- * that applies and omits the other). A missing field reads as 0.
+ * `weightKg` is set for per-kg items; `pieceCount` + `ratePerPiece` for
+ * per-piece items. All are optional so the shape stays minimal per mode
+ * (Firebase SDK v11 rejects literal `undefined`, so the form writes only
+ * the fields that apply and omits the rest). A missing field reads as 0.
+ *
+ * `ratePerPiece` (added 2026-06-10) is THIS FLYER'S ฿/piece for this
+ * item — the per-piece analog of assignment.categoryRates, letting each
+ * flyer be paid a different rate. Read it via getFlyerPieceRate, which
+ * falls back to the deprecated order-global item.flyerRatePerPiece for
+ * legacy / single-flyer orders.
  */
 export interface FlyerSplit {
   flyerId: string;
   weightKg?: number;
   pieceCount?: number;
+  ratePerPiece?: number;
 }
 
 /**

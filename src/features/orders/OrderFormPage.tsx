@@ -26,6 +26,7 @@ import {
   calcAssignmentPayout,
   calcTotalFlyerWeight,
   getFlyerPieceCount,
+  getFlyerPieceRate,
   groupItemsByCategory,
   groupItemsByCategoryFlyerKg,
 } from './orderHelpers';
@@ -100,6 +101,9 @@ const itemSchema = z
           flyerId: z.string(),
           weightKg: optionalNonNegNumber,
           pieceCount: optionalNonNegNumber,
+          // Per-flyer ฿/piece for this item (2026-06-10). Each flyer's own
+          // per-piece rate, the analog of assignment.categoryRates.
+          ratePerPiece: optionalNonNegNumber,
         }),
       )
       .optional(),
@@ -278,9 +282,11 @@ export function OrderFormPage() {
         const next: FlyerSplit[] = pickedFlyerIds.map((fid) => {
           const ex = byId.get(fid);
           if (ex) {
-            // Preserve any value the owner already entered for this flyer.
+            // Preserve any value the owner already entered for this flyer —
+            // for per-piece that includes the per-flyer ratePerPiece, so
+            // adding/removing another flyer doesn't drop this flyer's rate.
             return isPiece
-              ? { flyerId: fid, pieceCount: ex.pieceCount }
+              ? { flyerId: fid, pieceCount: ex.pieceCount, ratePerPiece: ex.ratePerPiece }
               : { flyerId: fid, weightKg: ex.weightKg };
           }
           // Newly-picked flyers (incl. flyer A on the 1→2 transition) start
@@ -300,8 +306,14 @@ export function OrderFormPage() {
       } else if (it.flyerSplits && it.flyerSplits.length) {
         if (pickedFlyerIds.length === 1) {
           const s = it.flyerSplits.find((x) => x.flyerId === pickedFlyerIds[0]) ?? it.flyerSplits[0];
-          if (isPiece) setValue(`items.${i}.flyerPieceCount`, s?.pieceCount);
-          else setValue(`items.${i}.flyerWeightKg`, s?.weightKg);
+          if (isPiece) {
+            setValue(`items.${i}.flyerPieceCount`, s?.pieceCount);
+            // Preserve the surviving flyer's per-piece rate into the legacy
+            // single-flyer holder so collapsing 2→1 doesn't lose it.
+            setValue(`items.${i}.flyerRatePerPiece`, s?.ratePerPiece ?? 0);
+          } else {
+            setValue(`items.${i}.flyerWeightKg`, s?.weightKg);
+          }
         }
         setValue(`items.${i}.flyerSplits`, undefined, { shouldDirty: true });
       }
@@ -353,19 +365,39 @@ export function OrderFormPage() {
             // the single-flyer path feels identical to today.
             const fid = submitFlyerIds[0];
             flyerSplits = isPiece
-              ? [{ flyerId: fid, pieceCount: it.flyerPieceCount ?? it.pieceCount ?? 0 }]
+              ? [
+                  {
+                    flyerId: fid,
+                    pieceCount: it.flyerPieceCount ?? it.pieceCount ?? 0,
+                    // Single-flyer per-piece rate lives in the legacy holder;
+                    // materialize it into the split so the canonical rate is
+                    // on flyerSplits[].ratePerPiece for all new orders.
+                    ratePerPiece: Number(it.flyerRatePerPiece) || 0,
+                  },
+                ]
               : [{ flyerId: fid, weightKg: it.flyerWeightKg ?? it.weightKg ?? 0 }];
           } else {
             // Multi flyer: one concrete entry per picked flyer (blank ⇒ 0,
-            // independent of customer qty — no sum-to-customer check).
+            // independent of customer qty — no sum-to-customer check). Each
+            // per-piece entry carries THIS FLYER'S ratePerPiece from the grid
+            // (falling back to the legacy item rate if never set per-flyer).
             const byId = new Map((it.flyerSplits ?? []).map((s) => [s.flyerId, s]));
             flyerSplits = submitFlyerIds.map((fid) => {
               const ex = byId.get(fid);
               return isPiece
-                ? { flyerId: fid, pieceCount: Number(ex?.pieceCount) || 0 }
+                ? {
+                    flyerId: fid,
+                    pieceCount: Number(ex?.pieceCount) || 0,
+                    ratePerPiece: Number(ex?.ratePerPiece ?? it.flyerRatePerPiece) || 0,
+                  }
                 : { flyerId: fid, weightKg: Number(ex?.weightKg) || 0 };
             });
           }
+          // Per-piece items now carry the rate per-flyer on flyerSplits, so
+          // multi-flyer orders DON'T write the deprecated order-global
+          // item.flyerRatePerPiece (kept only as the single-flyer / legacy
+          // fallback). Per-kg items never have it.
+          const legacyPieceRate = isPiece && !submitMulti ? it.flyerRatePerPiece : undefined;
           return {
             description: it.description,
             categoryId: it.categoryId,
@@ -375,7 +407,7 @@ export function OrderFormPage() {
             ratePerKg: it.ratePerKg,
             pieceCount: it.pieceCount,
             ratePerPiece: it.ratePerPiece,
-            flyerRatePerPiece: it.flyerRatePerPiece,
+            flyerRatePerPiece: legacyPieceRate,
             flyerSplits,
             subtotal: it.subtotal,
           } as OrderItem;
@@ -474,18 +506,18 @@ export function OrderFormPage() {
     else window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  /** Upsert one flyer's allocation for one item (multi-flyer grid). Blank
-   *  (value === undefined) is stored as an undefined-valued entry so the
-   *  cell reads back blank; getFlyerWeightKg/getFlyerPieceCount treat it
-   *  as 0. The matching numeric field is chosen by the item's mode. */
-  function setItemSplit(itemIdx: number, flyerId: string, value: number | undefined) {
+  /** Patch one flyer's split entry for one item (multi-flyer grid). MERGES
+   *  the patch into the existing entry so writing the qty cell preserves
+   *  the per-flyer ratePerPiece and vice versa. Blank (undefined) fields
+   *  read back blank; getFlyer* accessors treat them as 0. */
+  function setItemSplit(itemIdx: number, flyerId: string, patch: Partial<FlyerSplit>) {
     const it = watchedItems[itemIdx];
-    const isPiece = (it?.pricingMode ?? 'per_kg') === 'per_piece';
     const cur: FlyerSplit[] = it?.flyerSplits ?? [];
-    const entry: FlyerSplit = isPiece ? { flyerId, pieceCount: value } : { flyerId, weightKg: value };
-    const next = cur.some((s) => s.flyerId === flyerId)
-      ? cur.map((s) => (s.flyerId === flyerId ? entry : s))
-      : [...cur, entry];
+    const existing = cur.find((s) => s.flyerId === flyerId);
+    const merged: FlyerSplit = { ...existing, flyerId, ...patch };
+    const next = existing
+      ? cur.map((s) => (s.flyerId === flyerId ? merged : s))
+      : [...cur, merged];
     setValue(`items.${itemIdx}.flyerSplits`, next, { shouldDirty: true });
   }
 
@@ -909,13 +941,14 @@ export function OrderFormPage() {
                                 inputMode={isPiece ? 'numeric' : 'decimal'}
                                 placeholder="0"
                                 value={val ?? ''}
-                                onChange={(e) =>
+                                onChange={(e) => {
+                                  const v = e.target.value === '' ? undefined : Number(e.target.value);
                                   setItemSplit(
                                     i,
                                     pf.flyerId,
-                                    e.target.value === '' ? undefined : Number(e.target.value),
-                                  )
-                                }
+                                    isPiece ? { pieceCount: v } : { weightKg: v },
+                                  );
+                                }}
                               />
                             </label>
                           );
@@ -1068,11 +1101,18 @@ export function OrderFormPage() {
                 setValue(`flyerAssignments.${i}.categoryRates`, next, { shouldDirty: true });
               };
 
-              /** Write a per-piece flyer rate to the corresponding item.
-                  Per-piece flyer rates live on the item (Option A). Live
-                  payout recomputes via calcAssignmentPayout on re-render. */
+              /** Write THIS FLYER'S per-piece rate. Multi-flyer: into the
+                  per-flyer split entry (items[idx].flyerSplits[a.flyerId]
+                  .ratePerPiece) so flyer A and B are independent. Single-
+                  flyer: the legacy item-level holder (materialized into the
+                  split's ratePerPiece at submit). Live payout recomputes via
+                  calcAssignmentPayout on re-render. */
               const setPieceRate = (itemIdx: number, ratePerPiece: number) => {
-                setValue(`items.${itemIdx}.flyerRatePerPiece`, ratePerPiece, { shouldDirty: true });
+                if (multiFlyer) {
+                  setItemSplit(itemIdx, a?.flyerId ?? '', { ratePerPiece });
+                } else {
+                  setValue(`items.${itemIdx}.flyerRatePerPiece`, ratePerPiece, { shouldDirty: true });
+                }
               };
 
               return (
@@ -1222,7 +1262,7 @@ export function OrderFormPage() {
                             <span className="text-right">Subtotal</span>
                           </div>
                           {perPieceRows.map(({ it, idx }) => {
-                            const rate = Number(it.flyerRatePerPiece) || 0;
+                            const rate = getFlyerPieceRate(it as OrderItem, a?.flyerId ?? '');
                             const flyerCount = getFlyerPieceCount(it as OrderItem, a?.flyerId ?? '');
                             const subtotal = flyerCount * rate;
                             return (
